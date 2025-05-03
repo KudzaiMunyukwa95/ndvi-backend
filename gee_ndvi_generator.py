@@ -10,7 +10,7 @@ service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
 # Initialize Earth Engine using service account credentials
 credentials = ee.ServiceAccountCredentials(
     email=service_account_info["client_email"],
-    key_data=json.dumps(service_account_info)  # FIX: convert dict to JSON string
+    key_data=json.dumps(service_account_info)
 )
 ee.Initialize(credentials)
 
@@ -44,28 +44,14 @@ def generate_ndvi():
         image = collection.median().clip(polygon)
 
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
-        rgb = image.select(["B4", "B3", "B2"]).visualize(min=0, max=3000)
+        rgb = image.select(["B4", "B3", "B2"])
 
-        ndvi_params = {
-            "min": 0,
-            "max": 1,
-            "palette": ["red", "yellow", "green"],
-            "region": polygon,
-            "format": "png",
-        }
+        # Visualization settings
+        ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
+        rgb_vis = rgb.visualize(min=0, max=3000)
 
-        rgb_params = {
-            "min": 0,
-            "max": 3000,
-            "region": polygon,
-            "format": "png",
-        }
-
-        ndvi_tile = ndvi.visualize(**ndvi_params)
-        rgb_tile = rgb.visualize(**rgb_params)
-
-        map_id_ndvi = ee.data.getMapId(ndvi_tile)
-        map_id_rgb = ee.data.getMapId(rgb_tile)
+        map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
+        map_id_rgb = ee.data.getMapId({"image": rgb_vis})
 
         return jsonify({
             "success": True,
