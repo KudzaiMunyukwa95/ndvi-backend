@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 import ee
 import json
@@ -6,9 +5,14 @@ import os
 
 app = Flask(__name__)
 
-# Load credentials from environment variable
+# Load and parse the service account credentials
 service_account_info = json.loads(os.environ.get('GEE_CREDENTIALS_JSON'))
-credentials = ee.ServiceAccountCredentials(email=service_account_info["client_email"], key_data=json.dumps(service_account_info))
+
+# Authenticate Earth Engine with dict, not string
+credentials = ee.ServiceAccountCredentials(
+    email=service_account_info["client_email"],
+    key_data=service_account_info
+)
 ee.Initialize(credentials)
 
 @app.route('/api/gee_ndvi', methods=['POST'])
