@@ -1,46 +1,70 @@
-
 from flask import Flask, request, jsonify
 import ee
-import os
 import json
+import os
 
 app = Flask(__name__)
 
-# Load GEE credentials from environment variable
-service_account_info = json.loads(os.environ['GEE_CREDENTIALS_JSON'])
+# Load GEE credentials from Render environment variable
+service_account_info = json.loads(os.environ['GEE_CREDENTIALS'])
 
-# Authenticate with GEE
+# Authenticate and initialize Earth Engine
 credentials = ee.ServiceAccountCredentials(
-    email=service_account_info["client_email"],
+    email=service_account_info['client_email'],
     key_data=json.dumps(service_account_info)
 )
 ee.Initialize(credentials)
 
-@app.route('/api/gee_ndvi', methods=['POST'])
-def get_ndvi():
+@app.route('/api/gee_ndvi_rgb', methods=['POST'])
+def get_ndvi_and_rgb():
     try:
-        data = request.json
-        coordinates = data['coordinates']
-        start_date = data['startDate']
-        end_date = data['endDate']
+        data = request.get_json()
+        coordinates = data.get('coordinates')
+        start_date = data.get('startDate')
+        end_date = data.get('endDate')
+
+        if not coordinates or not start_date or not end_date:
+            return jsonify({'success': False, 'error': 'Missing parameters'}), 400
 
         geometry = ee.Geometry.Polygon(coordinates)
 
-        dataset = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2') \
+        collection = ee.ImageCollection('COPERNICUS/S2_SR') \
             .filterBounds(geometry) \
-            .filterDate(start_date, end_date)
+            .filterDate(start_date, end_date) \
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
 
-        ndvi = dataset.map(lambda image: image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI')).mean()
+        # Calculate mean NDVI
+        ndvi_image = collection.map(
+            lambda img: img.normalizedDifference(['B8', 'B4']).rename('NDVI')
+        ).mean()
 
-        ndvi_value = ndvi.reduceRegion(
-            reducer=ee.Reducer.mean(),
-            geometry=geometry,
-            scale=30
-        ).get('NDVI').getInfo()
+        # Create NDVI visualization parameters
+        ndvi_viz_params = {
+            'min': 0.0,
+            'max': 1.0,
+            'palette': ['gray', 'red', 'orange', 'yellow', 'green']
+        }
 
-        return jsonify({'success': True, 'ndvi': ndvi_value})
+        # Create RGB visualization parameters
+        rgb_image = collection.median().select(['B4', 'B3', 'B2'])  # Red, Green, Blue
+        rgb_viz_params = {
+            'min': 0,
+            'max': 3000,
+            'bands': ['B4', 'B3', 'B2']
+        }
+
+        # Generate map IDs and tokens
+        map_id_ndvi = ee.data.getMapId({'image': ndvi_image.visualize(**ndvi_viz_params)})
+        map_id_rgb = ee.data.getMapId({'image': rgb_image.visualize(**rgb_viz_params)})
+
+        return jsonify({
+            'success': True,
+            'ndvi_tile_url': map_id_ndvi['tile_fetcher'].url_format,
+            'rgb_tile_url': map_id_rgb['tile_fetcher'].url_format
+        })
+
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(debug=True, host='0.0.0.0', port=5000)
