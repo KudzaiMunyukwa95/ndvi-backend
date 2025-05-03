@@ -2,7 +2,6 @@
 from flask import Flask, request, jsonify
 import ee
 import os
-import json
 
 app = Flask(__name__)
 
@@ -10,16 +9,22 @@ app = Flask(__name__)
 SERVICE_ACCOUNT = os.getenv('GEE_SERVICE_ACCOUNT')
 PRIVATE_KEY = os.getenv('GEE_PRIVATE_KEY')
 
-# Format private key for JSON
-key_json = {
+# Full credentials JSON for Earth Engine
+service_account_info = {
     "type": "service_account",
-    "client_email": SERVICE_ACCOUNT,
+    "project_id": "ee-kaymunyukwa",
+    "private_key_id": "dummy_key_id",
     "private_key": PRIVATE_KEY,
-    "token_uri": "https://oauth2.googleapis.com/token"
+    "client_email": SERVICE_ACCOUNT,
+    "client_id": "dummy_client_id",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{SERVICE_ACCOUNT}"
 }
 
 # Authenticate Earth Engine using service account
-credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, key_data=key_json)
+credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, service_account_info)
 ee.Initialize(credentials)
 
 @app.route('/api/gee_ndvi', methods=['POST'])
@@ -38,7 +43,7 @@ def get_ndvi():
         .filterDate(start_date, end_date)
 
     ndvi = dataset.map(lambda image: image.normalizedDifference(['B5', 'B4']).rename('NDVI')).mean()
-    
+
     # Get NDVI value as a single pixel value (average)
     ndvi_value = ndvi.reduceRegion(
         reducer=ee.Reducer.mean(),
