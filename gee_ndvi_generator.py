@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 import ee
 import os
@@ -6,44 +5,49 @@ import json
 
 app = Flask(__name__)
 
-# Load raw JSON string from Render env variable
-key_json_str = os.environ.get('GEE_CREDENTIALS_JSON')
+# Load the GEE credentials from environment variable
+service_account_info = json.loads(os.environ['GEE_CREDENTIALS'])
 
-# Initialize Earth Engine with raw JSON string
+# Initialize Earth Engine with service account
 credentials = ee.ServiceAccountCredentials(
-    email=json.loads(key_json_str)["client_email"],
-    key_data=key_json_str  # <-- Must be string
+    email=service_account_info["client_email"],
+    key_data=json.dumps(service_account_info)
 )
-
 ee.Initialize(credentials)
 
 @app.route('/api/gee_ndvi', methods=['POST'])
 def get_ndvi():
     try:
-        data = request.get_json()
+        data = request.json
         coordinates = data['coordinates']
         start_date = data['startDate']
         end_date = data['endDate']
 
-        geometry = ee.Geometry.Polygon([coordinates])
+        # Construct valid GeoJSON Polygon
+        geometry = ee.Geometry({
+            "type": "Polygon",
+            "coordinates": coordinates
+        })
 
-        collection = ee.ImageCollection('COPERNICUS/S2_SR') \
-            .filterDate(start_date, end_date) \
+        # Fetch LANDSAT-8 and calculate NDVI
+        collection = ee.ImageCollection('LANDSAT/LC08/C01/T1') \
             .filterBounds(geometry) \
-            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+            .filterDate(start_date, end_date)
 
-        ndvi = collection.map(lambda img: img.normalizedDifference(['B8', 'B4']).rename('NDVI')).mean()
+        ndvi = collection.map(
+            lambda image: image.normalizedDifference(['B5', 'B4']).rename('NDVI')
+        ).mean()
 
         mean_ndvi = ndvi.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=geometry,
-            scale=10,
-            maxPixels=1e9
+            scale=30
         ).get('NDVI').getInfo()
 
-        return jsonify({'success': True, 'ndvi': mean_ndvi})
+        return jsonify({"success": True, "ndvi": mean_ndvi})
+
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({"success": False, "error": str(e)})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    app.run(debug=True)
