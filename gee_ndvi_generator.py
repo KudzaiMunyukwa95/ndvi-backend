@@ -39,9 +39,7 @@ def get_ndvi():
 
     geometry = ee.Geometry.Polygon(coordinates)
 
-    dataset = ee.ImageCollection('LANDSAT/LC08/C01/T1') \
-        .filterBounds(geometry) \
-        .filterDate(start_date, end_date)
+    dataset = ee.ImageCollection('LANDSAT/LC08/C01/T1')         .filterBounds(geometry)         .filterDate(start_date, end_date)
 
     ndvi = dataset.map(lambda image: image.normalizedDifference(['B5', 'B4']).rename('NDVI')).mean()
 
@@ -54,4 +52,5 @@ def get_ndvi():
     return jsonify({'success': True, 'ndvi': ndvi_value})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(debug=True, host='0.0.0.0', port=port)
