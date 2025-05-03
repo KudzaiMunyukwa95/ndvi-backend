@@ -3,8 +3,24 @@ import ee
 
 app = Flask(__name__)
 
-# Initialize the Earth Engine API
-ee.Initialize()
+import os
+import json
+
+# Load service account credentials from environment variables
+SERVICE_ACCOUNT = os.getenv('GEE_SERVICE_ACCOUNT')
+PRIVATE_KEY = os.getenv('GEE_PRIVATE_KEY')
+
+# Reconstruct the key as JSON
+key_dict = {
+    "type": "service_account",
+    "client_email": SERVICE_ACCOUNT,
+    "private_key": PRIVATE_KEY,
+    "token_uri": "https://oauth2.googleapis.com/token"
+}
+
+credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, key_dict)
+ee.Initialize(credentials)
+
 
 @app.route('/api/gee_ndvi', methods=['POST'])
 def get_ndvi():
