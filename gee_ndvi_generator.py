@@ -39,13 +39,9 @@ def generate_ndvi():
             .filterBounds(polygon)
             .filterDate(start, end)
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
-            .sort('system:time_start', False)  # newest first
         )
 
-        image = collection.first().clip(polygon)
-
-        # Extract actual image date
-        image_date = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd')
+        image = collection.median().clip(polygon)
 
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
         rgb = image.select(["B4", "B3", "B2"])
@@ -60,8 +56,7 @@ def generate_ndvi():
         return jsonify({
             "success": True,
             "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
-            "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format,
-            "capture_date": image_date.getInfo()
+            "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format
         })
 
     except Exception as e:
