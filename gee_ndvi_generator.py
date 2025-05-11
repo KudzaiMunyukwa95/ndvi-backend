@@ -1,18 +1,9 @@
 import os
 import json
 import ee
+import traceback
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-
-# Load service account info from environment variable
-service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
-
-# Initialize Earth Engine using service account credentials
-credentials = ee.ServiceAccountCredentials(
-    email=service_account_info["client_email"],
-    key_data=json.dumps(service_account_info)
-)
-ee.Initialize(credentials)
 
 app = Flask(__name__)
 CORS(app)
@@ -24,36 +15,74 @@ def index():
 @app.route("/api/gee_ndvi", methods=["POST"])
 def generate_ndvi():
     try:
+        # Initialize GEE with service account if not already initialized
+        if not ee.data._initialized:
+            try:
+                # Load service account info from environment variable
+                service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
+                
+                # Initialize Earth Engine using service account credentials
+                credentials = ee.ServiceAccountCredentials(
+                    email=service_account_info["client_email"],
+                    key_data=json.dumps(service_account_info)
+                )
+                ee.Initialize(credentials)
+            except Exception as e:
+                return jsonify({
+                    "success": False, 
+                    "error": f"GEE initialization error: {str(e)}",
+                    "details": traceback.format_exc()
+                }), 500
+        
+        # Parse request data
         data = request.get_json()
         coords = data.get("coordinates")
         start = data.get("startDate")
         end = data.get("endDate")
-
+        
+        # Validate inputs
         if not coords or not start or not end:
             return jsonify({"success": False, "error": "Missing input fields"}), 400
-
+        
+        # Log incoming request
+        print(f"Processing request: start={start}, end={end}, coords length={len(coords)}")
+        
+        # Create Earth Engine geometry
         polygon = ee.Geometry.Polygon(coords)
 
+        # Get Sentinel-2 collection
         collection = (
             ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
             .filterBounds(polygon)
             .filterDate(start, end)
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
         )
-
+        
+        # Check if collection is empty
+        collection_size = collection.size().getInfo()
+        if collection_size == 0:
+            return jsonify({
+                "success": False, 
+                "error": "No Sentinel-2 imagery found for the specified date range and location",
+                "empty_collection": True
+            }), 404
+        
+        # Get median image and clip to polygon
         image = collection.median().clip(polygon)
-
+        
+        # Calculate NDVI
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
         rgb = image.select(["B4", "B3", "B2"])
-
+        
         # Visualization settings
         ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
         rgb_vis = rgb.visualize(min=0, max=3000)
-
+        
+        # Get map IDs for tile URLs
         map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
         map_id_rgb = ee.data.getMapId({"image": rgb_vis})
         
-        # Calculate NDVI statistics for the polygon
+        # Calculate NDVI statistics
         ndvi_stats = ndvi.reduceRegion(
             reducer=ee.Reducer.mean().combine(
                 ee.Reducer.minMax(), "", True
@@ -63,24 +92,36 @@ def generate_ndvi():
             maxPixels=1e9
         ).getInfo()
         
-        # Get image acquisition date (use median date of collection as approximation)
-        image_date = collection.size().gt(0).conditional(
-            collection.first().date().format("YYYY-MM-dd"),
-            ee.String(start)
-        ).getInfo()
-
-        return jsonify({
+        # Get image acquisition date from first image in collection
+        first_image = collection.first()
+        image_date = first_image.date().format("YYYY-MM-dd").getInfo()
+        
+        # Return response with all data
+        response = {
             "success": True,
             "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
             "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format,
             "mean_ndvi": ndvi_stats.get("NDVI_mean"),
             "min_ndvi": ndvi_stats.get("NDVI_min"),
             "max_ndvi": ndvi_stats.get("NDVI_max"),
-            "image_date": image_date
-        })
+            "image_date": image_date,
+            "collection_size": collection_size
+        }
+        
+        print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}")
+        return jsonify(response)
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        error_message = str(e)
+        stack_trace = traceback.format_exc()
+        print(f"Error in GEE NDVI processing: {error_message}")
+        print(f"Stack trace: {stack_trace}")
+        
+        return jsonify({
+            "success": False, 
+            "error": error_message,
+            "stack_trace": stack_trace
+        }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
