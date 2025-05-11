@@ -4,10 +4,9 @@ import ee
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# Load service account info from environment variable
+# Load GEE credentials
 service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
 
-# Initialize Earth Engine using service account credentials
 credentials = ee.ServiceAccountCredentials(
     email=service_account_info["client_email"],
     key_data=json.dumps(service_account_info)
@@ -34,37 +33,42 @@ def generate_ndvi():
 
         polygon = ee.Geometry.Polygon(coords)
 
-        # Load Sentinel-2 collection and apply filters
+        # Load Sentinel-2 collection
         collection = ee.ImageCollection("COPERNICUS/S2_HARMONIZED") \
             .filterBounds(polygon) \
             .filterDate(start, end) \
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20)) \
-            .sort('system:time_start', False)  # latest first
+            .sort('system:time_start', False)
 
-        image = collection.first().clip(polygon)
+        image = collection.first()
+        # Check if image is available
+        info = image.getInfo() if image else None
+        if info is None:
+            return jsonify({"success": False, "message": "No valid Sentinel-2 images found for the selected date range."}), 404
 
-        # NDVI calculation
+        image = image.clip(polygon)
+
+        # Calculate NDVI
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
 
-        # RGB visualization parameters
+        # Visualization parameters
         rgb_vis = {
             "bands": ["B4", "B3", "B2"],
             "min": 0,
-            "max": 3000
+            "max": 3000,
         }
 
-        # NDVI visualization parameters
         ndvi_vis = {
             "min": 0,
             "max": 1,
             "palette": ["#d7191c", "#fdae61", "#ffffbf", "#a6d96a", "#1a9641"]
         }
 
-        # Get tile URLs
+        # Map tiles
         ndvi_map = ndvi.getMapId(ndvi_vis)
         rgb_map = image.getMapId(rgb_vis)
 
-        # Get NDVI stats
+        # NDVI stats
         stats = ndvi.reduceRegion(
             reducer=ee.Reducer.minMax().combine(ee.Reducer.mean(), "", True),
             geometry=polygon,
@@ -88,7 +92,7 @@ def generate_ndvi():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-# FINAL DEPLOYMENT FOOTER FOR RENDER
+# 🔁 Render-compatible app run
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
