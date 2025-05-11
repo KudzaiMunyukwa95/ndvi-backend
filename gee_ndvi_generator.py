@@ -52,11 +52,31 @@ def generate_ndvi():
 
         map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
         map_id_rgb = ee.data.getMapId({"image": rgb_vis})
+        
+        # Calculate NDVI statistics for the polygon
+        ndvi_stats = ndvi.reduceRegion(
+            reducer=ee.Reducer.mean().combine(
+                ee.Reducer.minMax(), "", True
+            ),
+            geometry=polygon,
+            scale=10,
+            maxPixels=1e9
+        ).getInfo()
+        
+        # Get image acquisition date (use median date of collection as approximation)
+        image_date = collection.size().gt(0).conditional(
+            collection.first().date().format("YYYY-MM-dd"),
+            ee.String(start)
+        ).getInfo()
 
         return jsonify({
             "success": True,
             "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
-            "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format
+            "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format,
+            "mean_ndvi": ndvi_stats.get("NDVI_mean"),
+            "min_ndvi": ndvi_stats.get("NDVI_min"),
+            "max_ndvi": ndvi_stats.get("NDVI_max"),
+            "image_date": image_date
         })
 
     except Exception as e:
