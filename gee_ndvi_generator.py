@@ -30,38 +30,63 @@ def generate_ndvi():
         end = data.get("endDate")
 
         if not coords or not start or not end:
-            return jsonify({"success": False, "error": "Missing input fields"}), 400
+            return jsonify({"success": False, "message": "Missing coordinates or date range"}), 400
 
         polygon = ee.Geometry.Polygon(coords)
 
-        collection = (
-            ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
-            .filterBounds(polygon)
-            .filterDate(start, end)
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+        # Load Sentinel-2 collection
+        collection = ee.ImageCollection("COPERNICUS/S2_HARMONIZED") \
+            .filterBounds(polygon) \
+            .filterDate(start, end) \
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20)) \
+            .sort('system:time_start', False)  # Get latest clean image
+
+        image = collection.first().clip(polygon)
+
+        # NDVI calculation
+        ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
+
+        # RGB visualization
+        rgb_vis = {
+            "bands": ["B4", "B3", "B2"],
+            "min": 0,
+            "max": 3000,
+        }
+
+        # NDVI visualization
+        ndvi_vis = {
+            "min": 0,
+            "max": 1,
+            "palette": ["#d7191c", "#fdae61", "#ffffbf", "#a6d96a", "#1a9641"]
+        }
+
+        # Tile URLS
+        ndvi_map = ndvi.getMapId(ndvi_vis)
+        rgb_map = image.getMapId(rgb_vis)
+
+        # Calculate NDVI statistics
+        stats = ndvi.reduceRegion(
+            reducer=ee.Reducer.minMax().combine(ee.Reducer.mean(), "", True),
+            geometry=polygon,
+            scale=10,
+            maxPixels=1e9
         )
 
-        image = collection.median().clip(polygon)
-
-        ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
-        rgb = image.select(["B4", "B3", "B2"])
-
-        # Visualization settings
-        ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
-        rgb_vis = rgb.visualize(min=0, max=3000)
-
-        map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
-        map_id_rgb = ee.data.getMapId({"image": rgb_vis})
+        ndvi_min = stats.get("NDVI_min").getInfo()
+        ndvi_max = stats.get("NDVI_max").getInfo()
+        ndvi_mean = stats.get("NDVI_mean").getInfo()
 
         return jsonify({
             "success": True,
-            "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
-            "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format
+            "ndvi_tile_url": f"https://earthengine.googleapis.com/map/{ndvi_map['mapid']}/{{z}}/{{x}}/{{y}}?token={ndvi_map['token']}",
+            "rgb_tile_url": f"https://earthengine.googleapis.com/map/{rgb_map['mapid']}/{{z}}/{{x}}/{{y}}?token={rgb_map['token']}",
+            "ndvi_min": ndvi_min,
+            "ndvi_max": ndvi_max,
+            "ndvi_mean": ndvi_mean
         })
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "message": str(e)}), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(debug=True)
