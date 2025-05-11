@@ -4,8 +4,10 @@ import ee
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# Load GEE credentials
+# Load service account info from environment variable
 service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
+
+# Initialize Earth Engine using service account credentials
 credentials = ee.ServiceAccountCredentials(
     email=service_account_info["client_email"],
     key_data=json.dumps(service_account_info)
@@ -28,63 +30,38 @@ def generate_ndvi():
         end = data.get("endDate")
 
         if not coords or not start or not end:
-            return jsonify({"success": False, "message": "Missing coordinates or date range"}), 400
+            return jsonify({"success": False, "error": "Missing input fields"}), 400
 
         polygon = ee.Geometry.Polygon(coords)
 
-        # Sentinel-2 image collection with filters
-        collection = ee.ImageCollection("COPERNICUS/S2_HARMONIZED") \
-            .filterBounds(polygon) \
-            .filterDate(start, end) \
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20)) \
-            .sort('system:time_start', False)
-
-        image = ee.Image(collection.first())
-        info = image.getInfo() if image else None
-
-        if info is None:
-            return jsonify({
-                "success": False,
-                "message": "No valid Sentinel-2 image found for the selected range."
-            }), 404
-
-        image = image.clip(polygon)
-        image_date = image.date().format("YYYY-MM-dd").getInfo()
-
-        # NDVI calculation
-        ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
-
-        # Visualization parameters
-        rgb_vis = {"bands": ["B4", "B3", "B2"], "min": 0, "max": 3000}
-        ndvi_vis = {"min": 0, "max": 1,
-                    "palette": ["#d7191c", "#fdae61", "#ffffbf", "#a6d96a", "#1a9641"]}
-
-        # Get tile URLs
-        ndvi_map = ndvi.getMapId(ndvi_vis)
-        rgb_map = image.getMapId(rgb_vis)
-
-        # NDVI statistics
-        stats = ndvi.reduceRegion(
-            reducer=ee.Reducer.minMax().combine(ee.Reducer.mean(), "", True),
-            geometry=polygon,
-            scale=10,
-            maxPixels=1e9
+        collection = (
+            ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+            .filterBounds(polygon)
+            .filterDate(start, end)
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
         )
+
+        image = collection.median().clip(polygon)
+
+        ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
+        rgb = image.select(["B4", "B3", "B2"])
+
+        # Visualization settings
+        ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
+        rgb_vis = rgb.visualize(min=0, max=3000)
+
+        map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
+        map_id_rgb = ee.data.getMapId({"image": rgb_vis})
 
         return jsonify({
             "success": True,
-            "image_date": image_date,
-            "ndvi_tile_url": f"https://earthengine.googleapis.com/map/{ndvi_map['mapid']}/{{z}}/{{x}}/{{y}}?token={ndvi_map['token']}",
-            "rgb_tile_url": f"https://earthengine.googleapis.com/map/{rgb_map['mapid']}/{{z}}/{{x}}/{{y}}?token={rgb_map['token']}",
-            "ndvi_min": stats.get("NDVI_min").getInfo(),
-            "ndvi_max": stats.get("NDVI_max").getInfo(),
-            "ndvi_mean": stats.get("NDVI_mean").getInfo()
+            "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
+            "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format
         })
 
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-# For Render Deployment
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=True)
