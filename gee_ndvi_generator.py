@@ -50,44 +50,65 @@ def generate_ndvi():
         # Create Earth Engine geometry
         polygon = ee.Geometry.Polygon(coords)
 
-        # Get Sentinel-2 collection with additional filtering for higher quality results
-        collection = (
-            ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
-            .filterBounds(polygon)
-            .filterDate(start, end)
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
-            # Improve quality filtering
-            .sort("CLOUDY_PIXEL_PERCENTAGE")
-            .limit(10)  # Take up to 10 least cloudy images
-        )
+        # ENHANCED: Progressive cloud filtering approach
+        # Instead of using fixed thresholds, we'll try increasingly permissive filters
+        # until we find enough imagery
+        cloud_thresholds = [10, 20, 30, 50, 80]  # Progressive thresholds to try
+        collection = None
         
-        # Check if collection is empty
-        collection_size = collection.size().getInfo()
-        if collection_size == 0:
-            # If no images with <20% cloud cover, try a higher threshold
+        for threshold in cloud_thresholds:
+            # Get Sentinel-2 collection with cloud filtering
             collection = (
                 ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
                 .filterBounds(polygon)
                 .filterDate(start, end)
-                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 50))  # Try 50% cloud coverage
-                .sort("CLOUDY_PIXEL_PERCENTAGE")
-                .limit(5)  # Take fewer images with higher cloud percentage
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold))
+                .sort("CLOUDY_PIXEL_PERCENTAGE")  # Sort by cloud percentage
             )
             
+            # Limit collection size based on cloud threshold - fewer images for higher cloud coverage
+            limit_size = 10 if threshold <= 20 else (5 if threshold <= 50 else 3)
+            collection = collection.limit(limit_size)
+            
+            # Check if we found any images
             collection_size = collection.size().getInfo()
-            if collection_size == 0:
-                return jsonify({
-                    "success": False, 
-                    "error": "No Sentinel-2 imagery found for the specified date range and location",
-                    "empty_collection": True
-                }), 404
+            if collection_size > 0:
+                print(f"Found {collection_size} images with cloud threshold {threshold}%")
+                break
+        
+        # Handle empty collection after all attempts
+        collection_size = collection.size().getInfo() if collection else 0
+        if collection_size == 0:
+            return jsonify({
+                "success": False, 
+                "error": "No Sentinel-2 imagery found for the specified date range and location",
+                "empty_collection": True
+            }), 404
         
         # Get median image and clip to polygon
         image = collection.median().clip(polygon)
         
+        # ENHANCED: Save the cloud percentage of the best image for reporting
+        first_image = collection.first()
+        cloud_percentage = first_image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
+        
         # Calculate NDVI
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
         rgb = image.select(["B4", "B3", "B2"])
+        
+        # ENHANCED: Additional quality filters for better results
+        # Apply a mask to exclude very cloudy or low-quality pixels
+        quality_bands = ["QA60"]
+        if image.bandNames().contains("QA60").getInfo():
+            # Extract quality band (QA60 contains cloud mask information)
+            qa_band = image.select("QA60")
+            # Apply basic cloud mask (bits 10 and 11 are opaque and cirrus clouds)
+            cloud_bitmask = 1 << 10 | 1 << 11
+            mask = qa_band.bitwiseAnd(cloud_bitmask).eq(0)
+            
+            # Apply the quality mask to the NDVI and RGB layers
+            ndvi = ndvi.updateMask(mask)
+            rgb = rgb.updateMask(mask)
         
         # Visualization settings
         ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
@@ -109,7 +130,6 @@ def generate_ndvi():
                 maxPixels=1e9
             ).getInfo()
             
-            first_image = collection.first()
             image_date = first_image.date().format("YYYY-MM-dd").getInfo()
             
             return jsonify({
@@ -119,6 +139,7 @@ def generate_ndvi():
                 "max_ndvi": ndvi_stats.get("NDVI_max"),
                 "image_date": image_date,
                 "collection_size": collection_size,
+                "cloudy_pixel_percentage": cloud_percentage,
                 "visualization_error": str(e)
             })
         
@@ -133,10 +154,9 @@ def generate_ndvi():
         ).getInfo()
         
         # Get image acquisition date from first image in collection
-        first_image = collection.first()
         image_date = first_image.date().format("YYYY-MM-dd").getInfo()
         
-        # Return response with all data
+        # Return response with all data including cloud percentage
         response = {
             "success": True,
             "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
@@ -145,10 +165,11 @@ def generate_ndvi():
             "min_ndvi": ndvi_stats.get("NDVI_min"),
             "max_ndvi": ndvi_stats.get("NDVI_max"),
             "image_date": image_date,
-            "collection_size": collection_size
+            "collection_size": collection_size,
+            "cloudy_pixel_percentage": cloud_percentage
         }
         
-        print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}")
+        print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Cloud cover: {cloud_percentage}%")
         return jsonify(response)
 
     except Exception as e:
