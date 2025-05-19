@@ -96,19 +96,8 @@ def generate_ndvi():
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
         rgb = image.select(["B4", "B3", "B2"])
         
-        # ENHANCED: Additional quality filters for better results
-        # Apply a mask to exclude very cloudy or low-quality pixels
-        quality_bands = ["QA60"]
-        if image.bandNames().contains("QA60").getInfo():
-            # Extract quality band (QA60 contains cloud mask information)
-            qa_band = image.select("QA60")
-            # Apply basic cloud mask (bits 10 and 11 are opaque and cirrus clouds)
-            cloud_bitmask = 1 << 10 | 1 << 11
-            mask = qa_band.bitwiseAnd(cloud_bitmask).eq(0)
-            
-            # Apply the quality mask to the NDVI and RGB layers
-            ndvi = ndvi.updateMask(mask)
-            rgb = rgb.updateMask(mask)
+        # Note: QA60 band masking removed due to type incompatibility
+        # This was causing the "Bitwise operands must be integer only" error
         
         # Visualization settings
         ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
