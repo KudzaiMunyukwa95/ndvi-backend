@@ -264,17 +264,12 @@ def generate_evi():
             }
         ).rename('EVI')
         
-        # Instead of masking, we'll use .clamp() to limit EVI values to a reasonable range
-        # This keeps all pixels visible but limits extreme values
-        evi = evi.clamp(-1, 1)
-        
         # Get RGB for visual context
         rgb = image.select(["B4", "B3", "B2"])
         
         # Visualization settings for EVI
         # EVI typically ranges from -1 to 1, but useful values are between 0 and 1
         # Use a blue-yellow-green palette for EVI (slightly different from NDVI's red-yellow-green)
-        # Keep the original visualization range for better visibility
         evi_vis = evi.visualize(min=0, max=1, palette=["#1a3678", "#fff200", "#03ad31"])
         rgb_vis = rgb.visualize(min=0, max=3000)
         
