@@ -264,8 +264,9 @@ def generate_evi():
             }
         ).rename('EVI')
         
-        # Mask out extreme values to include only values between -1 and 1
-        evi = evi.updateMask(evi.gte(-1).And(evi.lte(1)))
+        # Instead of masking, we'll use .clamp() to limit EVI values to a reasonable range
+        # This keeps all pixels visible but limits extreme values
+        evi = evi.clamp(-1, 1)
         
         # Get RGB for visual context
         rgb = image.select(["B4", "B3", "B2"])
@@ -273,8 +274,8 @@ def generate_evi():
         # Visualization settings for EVI
         # EVI typically ranges from -1 to 1, but useful values are between 0 and 1
         # Use a blue-yellow-green palette for EVI (slightly different from NDVI's red-yellow-green)
-        # Updated max value from 1.0 to 0.8 for more realistic visualization
-        evi_vis = evi.visualize(min=0, max=0.8, palette=["#1a3678", "#fff200", "#03ad31"])
+        # Keep the original visualization range for better visibility
+        evi_vis = evi.visualize(min=0, max=1, palette=["#1a3678", "#fff200", "#03ad31"])
         rgb_vis = rgb.visualize(min=0, max=3000)
         
         # Get map IDs for tile URLs with timeout handling
