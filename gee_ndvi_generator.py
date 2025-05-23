@@ -254,9 +254,8 @@ def generate_evi():
         blue = image.select('B2')
         
         # Calculate EVI using the formula: EVI = 2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))
-        # Added max() to prevent division by very small or negative denominators
         evi = image.expression(
-            '2.5 * ((NIR - RED) / max((NIR + 6 * RED - 7.5 * BLUE + 1), 0.0001))',
+            '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))',
             {
                 'NIR': nir,
                 'RED': red,
