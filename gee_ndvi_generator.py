@@ -253,19 +253,28 @@ def generate_evi():
         red = image.select('B4')
         blue = image.select('B2')
         
-        # FIXED: Calculate EVI using the formula with denominator clamping:
-        # EVI = 2.5 * ((NIR - RED) / max((NIR + 6 * RED - 7.5 * BLUE + 1), 0.0001))
-        denominator = ee.Image(1).add(nir.add(red.multiply(6)).subtract(blue.multiply(7.5))).max(0.0001)
+        # FIXED: Calculate EVI with improved denominator handling:
+        denominator = nir.add(red.multiply(6)).subtract(blue.multiply(7.5)).add(1).max(0.0001)
         evi = nir.subtract(red).divide(denominator).multiply(2.5).rename('EVI')
         
-        # FIXED: Mask invalid EVI values to stay within -1 to 1 range
-        evi = evi.updateMask(evi.gte(-1).And(evi.lte(1)))
+        # IMPROVED: Less aggressive masking, only mask extremely invalid values
+        # This will prevent the "holes" in the EVI visualization
+        evi = evi.updateMask(evi.gte(-5).And(evi.lte(5)))
+        
+        # NEW: Clamp EVI values to a reasonable range for visualization
+        # This ensures that extreme values don't break the visualization
+        evi = evi.clamp(-1, 1)
         
         # Get RGB for visual context
         rgb = image.select(["B4", "B3", "B2"])
         
-        # FIXED: Visualization settings with limited range to 0-0.8
-        evi_vis = evi.visualize(min=0, max=0.8, palette=["#1a3678", "#598bda", "#fff200", "#87e673", "#03ad31"])
+        # IMPROVED: Visualization settings optimized for EVI range
+        # Using a distinct color palette that differentiates well across the EVI range
+        evi_vis = evi.visualize({
+            'min': 0, 
+            'max': 0.8,
+            'palette': ["#1a3678", "#598bda", "#fff200", "#87e673", "#03ad31"]
+        })
         rgb_vis = rgb.visualize(min=0, max=3000)
         
         # Get map IDs for tile URLs with timeout handling
