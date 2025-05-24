@@ -4,13 +4,134 @@ import ee
 import traceback
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
+# Initialize OpenAI client
+openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
 @app.route("/")
 def index():
     return "NDVI & RGB backend is live!"
+
+@app.route("/api/gpt_agronomic_report", methods=["POST"])
+def generate_agronomic_report():
+    try:
+        # Parse request data
+        data = request.get_json()
+        
+        # Extract required fields
+        field_name = data.get("field_name", "Unknown field")
+        crop = data.get("crop", "Unknown crop")
+        variety = data.get("variety", "Unknown variety")
+        planting_date = data.get("planting_date", "Unknown")
+        irrigated = "Yes" if data.get("irrigated", False) else "No"
+        latitude = data.get("latitude", "Unknown")
+        longitude = data.get("longitude", "Unknown")
+        date_range = data.get("date_range", "Unknown period")
+        ndvi_data = data.get("ndvi_data", [])
+        rainfall_data = data.get("rainfall_data", [])
+        
+        # Format NDVI data
+        ndvi_formatted = ", ".join([f"{item['date']}: {item['ndvi']:.2f}" for item in ndvi_data[:10]]) if ndvi_data else "No data"
+        if len(ndvi_data) > 10:
+            ndvi_formatted += f" (+ {len(ndvi_data) - 10} more readings)"
+        
+        # Process rainfall data into weekly totals if available
+        weekly_rainfall = {}
+        if rainfall_data:
+            for item in rainfall_data:
+                date = item.get('date')
+                if date:
+                    # Simple weekly grouping by taking the first 7 chars of date (YYYY-MM)
+                    # and the week number within the month (rough approximation)
+                    week_key = date[:7] + "-W" + str((int(date[8:10]) - 1) // 7 + 1)
+                    if week_key not in weekly_rainfall:
+                        weekly_rainfall[week_key] = 0
+                    weekly_rainfall[week_key] += item.get('rainfall', 0)
+            
+            rainfall_formatted = ", ".join([f"{week}: {total:.1f}mm" for week, total in weekly_rainfall.items()])
+        else:
+            rainfall_formatted = "No data"
+        
+        # Prepare prompt for GPT
+        prompt = f"""You are an expert agricultural advisor. Analyze field-level satellite and weather data to provide a concise, professional agronomic insight.
+
+Field name: {field_name}
+Crop: {crop}
+Variety: {variety}
+Farmer-declared planting date: {planting_date}
+Irrigated: {irrigated}
+Coordinates: ({latitude}, {longitude})
+Monitoring period: {date_range}
+
+NDVI values over time: {ndvi_formatted}
+Rainfall totals per week (mm): {rainfall_formatted}
+
+Your job:
+1. Comment on crop status based on NDVI trends.
+2. Indicate if the declared planting date aligns with the NDVI signature.
+3. Mention if rainfall patterns support rainfed planting OR if the crop is likely irrigated.
+4. If crop was already established before the start date, explain that.
+5. If no crop activity is detected, say so.
+6. End with a confidence rating (High, Medium, Low).
+
+Respond in 2-4 sentences. Be clear, professional, and sound like an agronomist advising an insurance underwriter."""
+
+        # Call OpenAI API
+        try:
+            print(f"Sending request to OpenAI for field: {field_name}")
+            
+            response = openai_client.chat.completions.create(
+                model="gpt-4o",  # You can adjust the model as needed
+                messages=[
+                    {"role": "system", "content": "You are an expert agricultural advisor providing concise field assessments."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.5,
+                max_tokens=300
+            )
+            
+            insight = response.choices[0].message.content.strip()
+            
+            # Extract confidence level from the insight
+            confidence_level = "medium"  # Default
+            if "High confidence" in insight or "Confidence: High" in insight:
+                confidence_level = "high"
+            elif "Low confidence" in insight or "Confidence: Low" in insight:
+                confidence_level = "low"
+            
+            return jsonify({
+                "success": True,
+                "insight": insight,
+                "confidence_level": confidence_level
+            })
+            
+        except Exception as e:
+            print(f"OpenAI API error: {str(e)}")
+            return jsonify({
+                "success": False,
+                "error": f"OpenAI API error: {str(e)}",
+                "fallback_insight": "Unable to generate agronomic insight due to API error. Please try again later."
+            }), 500
+            
+    except Exception as e:
+        error_message = str(e)
+        stack_trace = traceback.format_exc()
+        print(f"Error generating agronomic report: {error_message}")
+        print(f"Stack trace: {stack_trace}")
+        
+        return jsonify({
+            "success": False,
+            "error": error_message,
+            "stack_trace": stack_trace
+        }), 500
 
 @app.route("/api/gee_ndvi", methods=["POST"])
 def generate_ndvi():
@@ -95,9 +216,6 @@ def generate_ndvi():
         # Calculate NDVI
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
         rgb = image.select(["B4", "B3", "B2"])
-        
-        # Note: QA60 band masking removed due to type incompatibility
-        # This was causing the "Bitwise operands must be integer only" error
         
         # Visualization settings
         ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
