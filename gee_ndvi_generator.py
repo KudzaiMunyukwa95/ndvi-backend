@@ -1,4 +1,4 @@
-import os
+\import os
 import json
 import ee
 import traceback
@@ -10,7 +10,7 @@ CORS(app)
 
 @app.route("/")
 def index():
-    return "Vegetation Indices backend is live! (NDVI & EVI)"
+    return "NDVI & RGB backend is live!"
 
 @app.route("/api/gee_ndvi", methods=["POST"])
 def generate_ndvi():
@@ -45,7 +45,7 @@ def generate_ndvi():
             return jsonify({"success": False, "error": "Missing input fields"}), 400
         
         # Log incoming request
-        print(f"Processing NDVI request: start={start}, end={end}, coords length={len(coords)}")
+        print(f"Processing request: start={start}, end={end}, coords length={len(coords)}")
         
         # Create Earth Engine geometry
         polygon = ee.Geometry.Polygon(coords)
@@ -165,180 +165,6 @@ def generate_ndvi():
         error_message = str(e)
         stack_trace = traceback.format_exc()
         print(f"Error in GEE NDVI processing: {error_message}")
-        print(f"Stack trace: {stack_trace}")
-        
-        return jsonify({
-            "success": False, 
-            "error": error_message,
-            "stack_trace": stack_trace
-        }), 500
-
-@app.route("/api/gee_evi", methods=["POST"])
-def generate_evi():
-    try:
-        # Initialize GEE with service account if not already initialized
-        if not ee.data._initialized:
-            try:
-                # Load service account info from environment variable
-                service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
-                
-                # Initialize Earth Engine using service account credentials
-                credentials = ee.ServiceAccountCredentials(
-                    email=service_account_info["client_email"],
-                    key_data=json.dumps(service_account_info)
-                )
-                ee.Initialize(credentials)
-            except Exception as e:
-                return jsonify({
-                    "success": False, 
-                    "error": f"GEE initialization error: {str(e)}",
-                    "details": traceback.format_exc()
-                }), 500
-        
-        # Parse request data
-        data = request.get_json()
-        coords = data.get("coordinates")
-        start = data.get("startDate")
-        end = data.get("endDate")
-        
-        # Validate inputs
-        if not coords or not start or not end:
-            return jsonify({"success": False, "error": "Missing input fields"}), 400
-        
-        # Log incoming request
-        print(f"Processing EVI request: start={start}, end={end}, coords length={len(coords)}")
-        
-        # Create Earth Engine geometry
-        polygon = ee.Geometry.Polygon(coords)
-
-        # Progressive cloud filtering approach (same as NDVI endpoint)
-        cloud_thresholds = [10, 20, 30, 50, 80]
-        collection = None
-        
-        for threshold in cloud_thresholds:
-            collection = (
-                ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
-                .filterBounds(polygon)
-                .filterDate(start, end)
-                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold))
-                .sort("CLOUDY_PIXEL_PERCENTAGE")
-            )
-            
-            limit_size = 10 if threshold <= 20 else (5 if threshold <= 50 else 3)
-            collection = collection.limit(limit_size)
-            
-            collection_size = collection.size().getInfo()
-            if collection_size > 0:
-                print(f"Found {collection_size} images with cloud threshold {threshold}%")
-                break
-        
-        # Handle empty collection after all attempts
-        collection_size = collection.size().getInfo() if collection else 0
-        if collection_size == 0:
-            return jsonify({
-                "success": False, 
-                "error": "No Sentinel-2 imagery found for the specified date range and location",
-                "empty_collection": True
-            }), 404
-        
-        # Get median image and clip to polygon
-        image = collection.median().clip(polygon)
-        
-        # Save the cloud percentage of the best image for reporting
-        first_image = collection.first()
-        cloud_percentage = first_image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
-        
-        # Extract band values for EVI calculation
-        nir = image.select('B8')
-        red = image.select('B4')
-        blue = image.select('B2')
-        
-        # FIXED: Calculate EVI with improved denominator handling:
-        denominator = nir.add(red.multiply(6)).subtract(blue.multiply(7.5)).add(1).max(0.0001)
-        evi = nir.subtract(red).divide(denominator).multiply(2.5).rename('EVI')
-        
-        # IMPROVED: Less aggressive masking, only mask extremely invalid values
-        # This will prevent the "holes" in the EVI visualization
-        evi = evi.updateMask(evi.gte(-5).And(evi.lte(5)))
-        
-        # NEW: Clamp EVI values to a reasonable range for visualization
-        # This ensures that extreme values don't break the visualization
-        evi = evi.clamp(-1, 1)
-        
-        # Get RGB for visual context
-        rgb = image.select(["B4", "B3", "B2"])
-        
-        # IMPROVED: Visualization settings optimized for EVI range
-        # Using a distinct color palette that differentiates well across the EVI range
-        evi_vis = evi.visualize({
-            'min': 0, 
-            'max': 0.8,
-            'palette': ["#1a3678", "#598bda", "#fff200", "#87e673", "#03ad31"]
-        })
-        rgb_vis = rgb.visualize(min=0, max=3000)
-        
-        # Get map IDs for tile URLs with timeout handling
-        try:
-            map_id_evi = ee.data.getMapId({"image": evi_vis})
-            map_id_rgb = ee.data.getMapId({"image": rgb_vis})
-        except Exception as e:
-            print(f"Error getting map IDs: {e}")
-            # Still return statistics even if visualization fails
-            evi_stats = evi.reduceRegion(
-                reducer=ee.Reducer.mean().combine(
-                    ee.Reducer.minMax(), "", True
-                ),
-                geometry=polygon,
-                scale=10,
-                maxPixels=1e9
-            ).getInfo()
-            
-            image_date = first_image.date().format("YYYY-MM-dd").getInfo()
-            
-            return jsonify({
-                "success": True,
-                "mean_evi": evi_stats.get("EVI_mean"),
-                "min_evi": evi_stats.get("EVI_min"),
-                "max_evi": evi_stats.get("EVI_max"),
-                "image_date": image_date,
-                "collection_size": collection_size,
-                "cloudy_pixel_percentage": cloud_percentage,
-                "visualization_error": str(e)
-            })
-        
-        # Calculate EVI statistics
-        evi_stats = evi.reduceRegion(
-            reducer=ee.Reducer.mean().combine(
-                ee.Reducer.minMax(), "", True
-            ),
-            geometry=polygon,
-            scale=10,
-            maxPixels=1e9
-        ).getInfo()
-        
-        # Get image acquisition date from first image in collection
-        image_date = first_image.date().format("YYYY-MM-dd").getInfo()
-        
-        # Return response with all data including cloud percentage
-        response = {
-            "success": True,
-            "evi_tile_url": map_id_evi["tile_fetcher"].url_format,
-            "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format,
-            "mean_evi": evi_stats.get("EVI_mean"),
-            "min_evi": evi_stats.get("EVI_min"),
-            "max_evi": evi_stats.get("EVI_max"),
-            "image_date": image_date,
-            "collection_size": collection_size,
-            "cloudy_pixel_percentage": cloud_percentage
-        }
-        
-        print(f"Successfully processed EVI request. Mean EVI: {evi_stats.get('EVI_mean')}, Cloud cover: {cloud_percentage}%")
-        return jsonify(response)
-
-    except Exception as e:
-        error_message = str(e)
-        stack_trace = traceback.format_exc()
-        print(f"Error in GEE EVI processing: {error_message}")
         print(f"Stack trace: {stack_trace}")
         
         return jsonify({
