@@ -18,7 +18,7 @@ openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 @app.route("/")
 def index():
-    return "NDVI, EVI & RGB backend is live!"
+    return "NDVI & RGB backend is live!"
 
 @app.route("/api/agronomic_insight", methods=["POST"])
 def generate_agronomic_report():
@@ -35,7 +35,6 @@ def generate_agronomic_report():
         longitude = data.get("longitude", "Unknown")
         date_range = data.get("date_range", "Unknown period")
         ndvi_data = data.get("ndvi_data", [])
-        evi_data = data.get("evi_data", [])  # New EVI data parameter
         rainfall_data = data.get("rainfall_data", [])
         estimated_planting_date = data.get("estimated_planting_date")
         
@@ -50,11 +49,6 @@ def generate_agronomic_report():
         ndvi_formatted = ", ".join([f"{item['date']}: {item['ndvi']:.2f}" for item in ndvi_data[:10]]) if ndvi_data else "No data"
         if len(ndvi_data) > 10:
             ndvi_formatted += f" (+ {len(ndvi_data) - 10} more readings)"
-        
-        # Format EVI data
-        evi_formatted = ", ".join([f"{item['date']}: {item['evi']:.2f}" for item in evi_data[:10]]) if evi_data else "No data"
-        if len(evi_data) > 10:
-            evi_formatted += f" (+ {len(evi_data) - 10} more readings)"
         
         # Process rainfall data into weekly totals if available
         weekly_rainfall = {}
@@ -73,8 +67,8 @@ def generate_agronomic_report():
         else:
             rainfall_formatted = "No data"
         
-        # Enhanced prompt that incorporates EVI data
-        prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI and EVI trends, rainfall data, field location, and known crop properties.
+        # Use the exact prompt provided
+        prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, rainfall data, field location, and known crop properties.
 
 🌾 Background
 Each analysis request includes:
@@ -83,50 +77,39 @@ Each analysis request includes:
 - Irrigation Status: {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
 - Latitude and Longitude: {latitude}, {longitude}
 - NDVI Time Series: {ndvi_formatted}
-- EVI Time Series: {evi_formatted}
 - Rainfall Time Series: {rainfall_formatted}
 - Analysis Date Range: {date_range}
 
 🎓 Agronomic Intelligence to Assume:
 - **Maize (e.g. SC727):**
   - Rainfed planting window: Nov--Jan (Zimbabwe)
-  - Early NDVI/EVI rise expected ~2 weeks after planting
-  - Peak NDVI: ~60--80 days after planting (may saturate earlier than EVI)
-  - Peak EVI: Continues to rise as canopy develops, less prone to saturation
-  - Senescence onset: NDVI/EVI may drop after ~100--120 days
+  - Early NDVI rise expected ~2 weeks after planting
+  - Peak NDVI: ~60--80 days after planting
+  - Senescence onset: NDVI may drop after ~100--120 days
 - **Soybeans:**
   - Planting window: Late Nov--Dec
   - Shorter lifecycle (~110 days)
-  - EVI more sensitive to canopy structure changes than NDVI
 - **Wheat:**
   - Winter wheat planted May--Jun (irrigated)
   - Spring wheat typically Nov--Dec (rainfed)
-  - EVI shows better correlation with biomass during full canopy
-- If crop/variety is unknown or labeled 'testing', use general NDVI/EVI + rainfall pattern logic and suggest entering known values for deeper insights.
+- If crop/variety is unknown or labeled 'testing', use general NDVI + rainfall pattern logic and suggest entering known values for deeper insights.
 
 🧠 Your Analysis Must Include:
-1. NDVI & EVI Pattern Interpretation (compare both indices)
+1. NDVI Pattern Interpretation (flat, rising, declining)
 2. Rainfall Response (rainfed crop triggers, dry periods)
 3. Crop Status Summary (bare soil, emergence, stress, maturity)
-4. Planting Date Inference (estimate based on NDVI/EVI/rainfall)
+4. Planting Date Inference (estimate based on NDVI/rainfall)
 5. Confidence Rating (High, Medium, Low)
 
-Comparative Analysis (NDVI vs EVI):
-- If NDVI saturates while EVI continues to rise, highlight healthy canopy development
-- If both indices plateau early, consider water stress or nutrient limitations
-- If EVI is consistently lower than expected for the crop type, consider possible soil background effects
-- Use the relationship between indices to better pinpoint crop development stages
-
 🧭 Examples of Language to Use:
-- "NDVI remained flat at ~0.18 while EVI stayed below 0.15, indicating bare soil or no active vegetation."
-- "NDVI increase after Dec 3 suggests planting occurred in late Nov, with EVI confirming active early growth."
+- "NDVI remained flat at ~0.18, indicating bare soil or no active vegetation."
+- "NDVI increase after Dec 3 suggests planting occurred in late Nov."
 - "Rainfall was insufficient to support rainfed planting."
-- "NDVI reached saturation at 0.85, while EVI continued rising to 0.65, indicating robust canopy development."
-- "Both NDVI and EVI declined, suggesting senescence or water stress."
+- "NDVI decline suggests senescence or water stress."
 - "Crop variety is unrecognized -- general vegetation analysis applied."
 
 🧵 Output Format:
-Respond in 3--5 sentences as a trained agronomist advising a field agent or insurer. Avoid referencing GPT, AI, or farmer-declared dates."""
+Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Avoid referencing GPT, AI, or farmer-declared dates."""
 
         # Call OpenAI API
         try:
@@ -135,7 +118,7 @@ Respond in 3--5 sentences as a trained agronomist advising a field agent or insu
             response = openai_client.chat.completions.create(
                 model="gpt-4o",  # You can adjust the model as needed
                 messages=[
-                    {"role": "system", "content": "You are Yieldera's agricultural advisor. Focus on planting date estimation using BOTH NDVI and EVI indices. DO NOT mention AI, GPT, or any third-party tools."},
+                    {"role": "system", "content": "You are Yieldera's agricultural advisor. Focus on planting date estimation. DO NOT mention AI, GPT, or any third-party tools."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.5,
@@ -152,17 +135,13 @@ Respond in 3--5 sentences as a trained agronomist advising a field agent or insu
                 confidence_level = "low"
             
             # IMPROVED CONFIDENCE LOGIC: Boost confidence based on data quality
-            if confidence_level != "high" and ndvi_data and len(ndvi_data) >= 10 and evi_data and len(evi_data) >= 10:
+            if confidence_level != "high" and ndvi_data and len(ndvi_data) >= 10:
                 # Check if NDVI pattern is consistent
                 ndvi_values = [item["ndvi"] for item in ndvi_data]
                 ndvi_std_dev = calculate_std_dev(ndvi_values)
                 
-                # Check if EVI pattern is consistent
-                evi_values = [item["evi"] for item in evi_data]
-                evi_std_dev = calculate_std_dev(evi_values)
-                
-                # If we have low cloud cover and consistent vegetation patterns, boost confidence
-                if avg_cloud_cover is not None and avg_cloud_cover < 20 and ndvi_std_dev < 0.15 and evi_std_dev < 0.15:
+                # If we have low cloud cover and consistent NDVI pattern, boost confidence
+                if avg_cloud_cover is not None and avg_cloud_cover < 20 and ndvi_std_dev < 0.15:
                     confidence_level = "high"
                     print(f"Boosted confidence to high based on data quality: {len(ndvi_data)} observations, {avg_cloud_cover:.1f}% cloud cover")
             
@@ -282,42 +261,20 @@ def generate_ndvi():
         
         # Calculate NDVI
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
-        
-        # Calculate EVI: 2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))
-        evi = image.expression(
-            '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))',
-            {
-                'NIR': image.select('B8'),
-                'RED': image.select('B4'),
-                'BLUE': image.select('B2')
-            }
-        ).rename("EVI")
-        
         rgb = image.select(["B4", "B3", "B2"])
         
         # Visualization settings
         ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
-        evi_vis = evi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
         rgb_vis = rgb.visualize(min=0, max=3000)
         
         # Get map IDs for tile URLs with timeout handling
         try:
             map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
-            map_id_evi = ee.data.getMapId({"image": evi_vis})
             map_id_rgb = ee.data.getMapId({"image": rgb_vis})
         except Exception as e:
             print(f"Error getting map IDs: {e}")
             # Still return statistics even if visualization fails
             ndvi_stats = ndvi.reduceRegion(
-                reducer=ee.Reducer.mean().combine(
-                    ee.Reducer.minMax(), "", True
-                ),
-                geometry=polygon,
-                scale=10,
-                maxPixels=1e9
-            ).getInfo()
-            
-            evi_stats = evi.reduceRegion(
                 reducer=ee.Reducer.mean().combine(
                     ee.Reducer.minMax(), "", True
                 ),
@@ -333,9 +290,6 @@ def generate_ndvi():
                 "mean_ndvi": ndvi_stats.get("NDVI_mean"),
                 "min_ndvi": ndvi_stats.get("NDVI_min"),
                 "max_ndvi": ndvi_stats.get("NDVI_max"),
-                "mean_evi": evi_stats.get("EVI_mean"),
-                "min_evi": evi_stats.get("EVI_min"),
-                "max_evi": evi_stats.get("EVI_max"),
                 "image_date": image_date,
                 "collection_size": collection_size,
                 "cloudy_pixel_percentage": cloud_percentage,
@@ -352,16 +306,6 @@ def generate_ndvi():
             maxPixels=1e9
         ).getInfo()
         
-        # Calculate EVI statistics
-        evi_stats = evi.reduceRegion(
-            reducer=ee.Reducer.mean().combine(
-                ee.Reducer.minMax(), "", True
-            ),
-            geometry=polygon,
-            scale=10,
-            maxPixels=1e9
-        ).getInfo()
-        
         # Get image acquisition date from first image in collection
         image_date = first_image.date().format("YYYY-MM-dd").getInfo()
         
@@ -369,26 +313,22 @@ def generate_ndvi():
         response = {
             "success": True,
             "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
-            "evi_tile_url": map_id_evi["tile_fetcher"].url_format,
             "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format,
             "mean_ndvi": ndvi_stats.get("NDVI_mean"),
             "min_ndvi": ndvi_stats.get("NDVI_min"),
             "max_ndvi": ndvi_stats.get("NDVI_max"),
-            "mean_evi": evi_stats.get("EVI_mean"),
-            "min_evi": evi_stats.get("EVI_min"),
-            "max_evi": evi_stats.get("EVI_max"),
             "image_date": image_date,
             "collection_size": collection_size,
             "cloudy_pixel_percentage": cloud_percentage
         }
         
-        print(f"Successfully processed NDVI/EVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Mean EVI: {evi_stats.get('EVI_mean')}, Cloud cover: {cloud_percentage}%")
+        print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Cloud cover: {cloud_percentage}%")
         return jsonify(response)
 
     except Exception as e:
         error_message = str(e)
         stack_trace = traceback.format_exc()
-        print(f"Error in GEE NDVI/EVI processing: {error_message}")
+        print(f"Error in GEE NDVI processing: {error_message}")
         print(f"Stack trace: {stack_trace}")
         
         return jsonify({
@@ -466,8 +406,8 @@ def generate_ndvi_timeseries():
         # Get list of all images in the collection
         image_list = collection.toList(collection.size())
         
-        # Process each image to get NDVI and EVI time series
-        time_series = []
+        # Process each image to get NDVI time series
+        ndvi_time_series = []
         
         for i in range(collection_size):
             # Get the image
@@ -479,26 +419,8 @@ def generate_ndvi_timeseries():
             # Calculate NDVI
             ndvi = clipped_image.normalizedDifference(["B8", "B4"]).rename("NDVI")
             
-            # Calculate EVI: 2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))
-            evi = clipped_image.expression(
-                '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))',
-                {
-                    'NIR': clipped_image.select('B8'),
-                    'RED': clipped_image.select('B4'),
-                    'BLUE': clipped_image.select('B2')
-                }
-            ).rename("EVI")
-            
             # Calculate mean NDVI for the polygon
             ndvi_stats = ndvi.reduceRegion(
-                reducer=ee.Reducer.mean(),
-                geometry=polygon,
-                scale=10,
-                maxPixels=1e9
-            ).getInfo()
-            
-            # Calculate mean EVI for the polygon
-            evi_stats = evi.reduceRegion(
                 reducer=ee.Reducer.mean(),
                 geometry=polygon,
                 scale=10,
@@ -511,35 +433,32 @@ def generate_ndvi_timeseries():
             # Get cloud percentage
             cloud_percentage = image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
             
-            # Only add valid readings
+            # Only add valid NDVI readings
             ndvi_value = ndvi_stats.get("NDVI")
-            evi_value = evi_stats.get("EVI")
-            
-            if ndvi_value is not None or evi_value is not None:
-                time_series.append({
+            if ndvi_value is not None:
+                ndvi_time_series.append({
                     "date": image_date,
                     "ndvi": ndvi_value,
-                    "evi": evi_value,
                     "cloud_percentage": cloud_percentage
                 })
         
         # Sort time series by date
-        time_series.sort(key=lambda x: x["date"])
+        ndvi_time_series.sort(key=lambda x: x["date"])
         
         # Return response with time series data
         response = {
             "success": True,
-            "time_series": time_series,
+            "time_series": ndvi_time_series,
             "collection_size": collection_size
         }
         
-        print(f"Successfully processed NDVI/EVI time series request. {len(time_series)} data points returned.")
+        print(f"Successfully processed NDVI time series request. {len(ndvi_time_series)} data points returned.")
         return jsonify(response)
 
     except Exception as e:
         error_message = str(e)
         stack_trace = traceback.format_exc()
-        print(f"Error in GEE NDVI/EVI time series processing: {error_message}")
+        print(f"Error in GEE NDVI time series processing: {error_message}")
         print(f"Stack trace: {stack_trace}")
         
         return jsonify({
