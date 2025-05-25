@@ -20,7 +20,7 @@ openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 def index():
     return "NDVI & RGB backend is live!"
 
-@app.route("/api/gpt_agronomic_report", methods=["POST"])
+@app.route("/api/agronomic_insight", methods=["POST"])
 def generate_agronomic_report():
     try:
         # Parse request data
@@ -30,13 +30,20 @@ def generate_agronomic_report():
         field_name = data.get("field_name", "Unknown field")
         crop = data.get("crop", "Unknown crop")
         variety = data.get("variety", "Unknown variety")
-        planting_date = data.get("planting_date", "Unknown")
         irrigated = "Yes" if data.get("irrigated", False) else "No"
         latitude = data.get("latitude", "Unknown")
         longitude = data.get("longitude", "Unknown")
         date_range = data.get("date_range", "Unknown period")
         ndvi_data = data.get("ndvi_data", [])
         rainfall_data = data.get("rainfall_data", [])
+        estimated_planting_date = data.get("estimated_planting_date")
+        
+        # Calculate average cloud cover if available
+        avg_cloud_cover = None
+        if ndvi_data and all("cloud_percentage" in item for item in ndvi_data):
+            cloud_percentages = [item["cloud_percentage"] for item in ndvi_data if item["cloud_percentage"] is not None]
+            if cloud_percentages:
+                avg_cloud_cover = sum(cloud_percentages) / len(cloud_percentages)
         
         # Format NDVI data
         ndvi_formatted = ", ".join([f"{item['date']}: {item['ndvi']:.2f}" for item in ndvi_data[:10]]) if ndvi_data else "No data"
@@ -60,13 +67,12 @@ def generate_agronomic_report():
         else:
             rainfall_formatted = "No data"
         
-        # Prepare prompt for GPT
-        prompt = f"""You are an expert agricultural advisor. Analyze field-level satellite and weather data to provide a concise, professional agronomic insight.
+        # Prepare prompt for insight generation - REMOVED FARMER-DECLARED PLANTING DATE
+        prompt = f"""You are an expert agricultural advisor working for Yieldera. Analyze field-level satellite and weather data to provide a concise, professional agronomic insight.
 
 Field name: {field_name}
 Crop: {crop}
 Variety: {variety}
-Farmer-declared planting date: {planting_date}
 Irrigated: {irrigated}
 Coordinates: ({latitude}, {longitude})
 Monitoring period: {date_range}
@@ -76,22 +82,24 @@ Rainfall totals per week (mm): {rainfall_formatted}
 
 Your job:
 1. Comment on crop status based on NDVI trends.
-2. Indicate if the declared planting date aligns with the NDVI signature.
-3. Mention if rainfall patterns support rainfed planting OR if the crop is likely irrigated.
-4. If crop was already established before the start date, explain that.
-5. If no crop activity is detected, say so.
-6. End with a confidence rating (High, Medium, Low).
+2. If an estimated planting date is provided ({estimated_planting_date if estimated_planting_date else 'None'}), evaluate if it aligns with the NDVI signature.
+3. If no clear planting date is detected, simply describe the vegetation patterns without referencing planting dates.
+4. Mention if rainfall patterns support rainfed planting OR if the crop is likely irrigated.
+5. If crop was already established before the start date, explain that.
+6. If no crop activity is detected, say so.
+7. End with a confidence rating (High, Medium, Low).
 
-Respond in 2-4 sentences. Be clear, professional, and sound like an agronomist advising an insurance underwriter."""
+Respond in 2-4 sentences. Be clear, professional, and sound like an agronomist advising an insurance underwriter.
+DO NOT mention "AI", "GPT", or any other third-party tools. The insight should appear to come directly from Yieldera's internal analysis system."""
 
         # Call OpenAI API
         try:
-            print(f"Sending request to OpenAI for field: {field_name}")
+            print(f"Sending request to generate insight for field: {field_name}")
             
             response = openai_client.chat.completions.create(
                 model="gpt-4o",  # You can adjust the model as needed
                 messages=[
-                    {"role": "system", "content": "You are an expert agricultural advisor providing concise field assessments."},
+                    {"role": "system", "content": "You are Yieldera's agricultural advisor providing concise field assessments. DO NOT mention AI, GPT, or any third-party tools."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.5,
@@ -102,10 +110,21 @@ Respond in 2-4 sentences. Be clear, professional, and sound like an agronomist a
             
             # Extract confidence level from the insight
             confidence_level = "medium"  # Default
-            if "High confidence" in insight or "Confidence: High" in insight:
+            if "High confidence" in insight or "Confidence: High" in insight or "high confidence" in insight.lower():
                 confidence_level = "high"
-            elif "Low confidence" in insight or "Confidence: Low" in insight:
+            elif "Low confidence" in insight or "Confidence: Low" in insight or "low confidence" in insight.lower():
                 confidence_level = "low"
+            
+            # IMPROVED CONFIDENCE LOGIC: Boost confidence based on data quality
+            if confidence_level != "high" and ndvi_data and len(ndvi_data) >= 10:
+                # Check if NDVI pattern is consistent
+                ndvi_values = [item["ndvi"] for item in ndvi_data]
+                ndvi_std_dev = calculate_std_dev(ndvi_values)
+                
+                # If we have low cloud cover and consistent NDVI pattern, boost confidence
+                if avg_cloud_cover is not None and avg_cloud_cover < 20 and ndvi_std_dev < 0.15:
+                    confidence_level = "high"
+                    print(f"Boosted confidence to high based on data quality: {len(ndvi_data)} observations, {avg_cloud_cover:.1f}% cloud cover")
             
             return jsonify({
                 "success": True,
@@ -117,8 +136,8 @@ Respond in 2-4 sentences. Be clear, professional, and sound like an agronomist a
             print(f"OpenAI API error: {str(e)}")
             return jsonify({
                 "success": False,
-                "error": f"OpenAI API error: {str(e)}",
-                "fallback_insight": "Unable to generate agronomic insight due to API error. Please try again later."
+                "error": f"Insight generation error: {str(e)}",
+                "fallback_insight": "Unable to generate agronomic insight due to service error. Please try again later."
             }), 500
             
     except Exception as e:
@@ -132,6 +151,14 @@ Respond in 2-4 sentences. Be clear, professional, and sound like an agronomist a
             "error": error_message,
             "stack_trace": stack_trace
         }), 500
+
+# Helper function to calculate standard deviation
+def calculate_std_dev(values):
+    if not values:
+        return 0
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    return variance ** 0.5
 
 @app.route("/api/gee_ndvi", methods=["POST"])
 def generate_ndvi():
