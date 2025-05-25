@@ -67,30 +67,49 @@ def generate_agronomic_report():
         else:
             rainfall_formatted = "No data"
         
-        # Prepare prompt for insight generation - REMOVED FARMER-DECLARED PLANTING DATE
-        prompt = f"""You are an expert agricultural advisor working for Yieldera. Analyze field-level satellite and weather data to provide a concise, professional agronomic insight.
+        # Use the exact prompt provided
+        prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, rainfall data, field location, and known crop properties.
 
-Field name: {field_name}
-Crop: {crop}
-Variety: {variety}
-Irrigated: {irrigated}
-Coordinates: ({latitude}, {longitude})
-Monitoring period: {date_range}
+🌾 Background
+Each analysis request includes:
+- Crop Type: {crop}
+- Variety: {variety}
+- Irrigation Status: {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
+- Latitude and Longitude: {latitude}, {longitude}
+- NDVI Time Series: {ndvi_formatted}
+- Rainfall Time Series: {rainfall_formatted}
+- Analysis Date Range: {date_range}
 
-NDVI values over time: {ndvi_formatted}
-Rainfall totals per week (mm): {rainfall_formatted}
+🎓 Agronomic Intelligence to Assume:
+- **Maize (e.g. SC727):**
+  - Rainfed planting window: Nov--Jan (Zimbabwe)
+  - Early NDVI rise expected ~2 weeks after planting
+  - Peak NDVI: ~60--80 days after planting
+  - Senescence onset: NDVI may drop after ~100--120 days
+- **Soybeans:**
+  - Planting window: Late Nov--Dec
+  - Shorter lifecycle (~110 days)
+- **Wheat:**
+  - Winter wheat planted May--Jun (irrigated)
+  - Spring wheat typically Nov--Dec (rainfed)
+- If crop/variety is unknown or labeled 'testing', use general NDVI + rainfall pattern logic and suggest entering known values for deeper insights.
 
-Your job:
-1. Comment on crop status based on NDVI trends.
-2. If an estimated planting date is provided ({estimated_planting_date if estimated_planting_date else 'None'}), evaluate if it aligns with the NDVI signature.
-3. If no clear planting date is detected, simply describe the vegetation patterns without referencing planting dates.
-4. Mention if rainfall patterns support rainfed planting OR if the crop is likely irrigated.
-5. If crop was already established before the start date, explain that.
-6. If no crop activity is detected, say so.
-7. End with a confidence rating (High, Medium, Low).
+🧠 Your Analysis Must Include:
+1. NDVI Pattern Interpretation (flat, rising, declining)
+2. Rainfall Response (rainfed crop triggers, dry periods)
+3. Crop Status Summary (bare soil, emergence, stress, maturity)
+4. Planting Date Inference (estimate based on NDVI/rainfall)
+5. Confidence Rating (High, Medium, Low)
 
-Respond in 2-4 sentences. Be clear, professional, and sound like an agronomist advising an insurance underwriter.
-DO NOT mention "AI", "GPT", or any other third-party tools. The insight should appear to come directly from Yieldera's internal analysis system."""
+🧭 Examples of Language to Use:
+- "NDVI remained flat at ~0.18, indicating bare soil or no active vegetation."
+- "NDVI increase after Dec 3 suggests planting occurred in late Nov."
+- "Rainfall was insufficient to support rainfed planting."
+- "NDVI decline suggests senescence or water stress."
+- "Crop variety is unrecognized -- general vegetation analysis applied."
+
+🧵 Output Format:
+Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Avoid referencing GPT, AI, or farmer-declared dates."""
 
         # Call OpenAI API
         try:
@@ -99,7 +118,7 @@ DO NOT mention "AI", "GPT", or any other third-party tools. The insight should a
             response = openai_client.chat.completions.create(
                 model="gpt-4o",  # You can adjust the model as needed
                 messages=[
-                    {"role": "system", "content": "You are Yieldera's agricultural advisor providing concise field assessments. DO NOT mention AI, GPT, or any third-party tools."},
+                    {"role": "system", "content": "You are Yieldera's agricultural advisor. Focus on planting date estimation. DO NOT mention AI, GPT, or any third-party tools."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.5,
@@ -133,7 +152,7 @@ DO NOT mention "AI", "GPT", or any other third-party tools. The insight should a
             })
             
         except Exception as e:
-            print(f"OpenAI API error: {str(e)}")
+            print(f"Insight generation error: {str(e)}")
             return jsonify({
                 "success": False,
                 "error": f"Insight generation error: {str(e)}",
