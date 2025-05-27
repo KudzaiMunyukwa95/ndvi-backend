@@ -37,6 +37,11 @@ def generate_agronomic_report():
         ndvi_data = data.get("ndvi_data", [])
         rainfall_data = data.get("rainfall_data", [])
         estimated_planting_date = data.get("estimated_planting_date")
+        temperature_data = data.get("temperature_data", [])
+        gdd_data = data.get("gdd_data", [])
+        gdd_stats = data.get("gdd_stats", {})
+        temperature_summary = data.get("temperature_summary", {})
+        base_temperature = data.get("base_temperature", 10)
         
         # Calculate average cloud cover if available
         avg_cloud_cover = None
@@ -67,8 +72,20 @@ def generate_agronomic_report():
         else:
             rainfall_formatted = "No data"
         
-        # Use the exact prompt provided
-        prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, rainfall data, field location, and known crop properties.
+        # Format temperature data
+        temp_formatted = "No data"
+        if temperature_data:
+            avg_min = sum(item["min"] for item in temperature_data) / len(temperature_data)
+            avg_max = sum(item["max"] for item in temperature_data) / len(temperature_data)
+            temp_formatted = f"Avg min: {avg_min:.1f}°C, Avg max: {avg_max:.1f}°C, Range: {min(item['min'] for item in temperature_data):.1f}°C to {max(item['max'] for item in temperature_data):.1f}°C"
+        
+        # Format GDD data
+        gdd_formatted = "No data"
+        if gdd_stats:
+            gdd_formatted = f"Cumulative GDD: {gdd_stats.get('total_gdd', 'N/A')}, Avg daily GDD: {gdd_stats.get('avg_daily_gdd', 'N/A')}, Base temp: {base_temperature}°C"
+        
+        # Construct prompt with enhanced information including temperature and GDD
+        prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, rainfall data, temperature patterns, GDD information, field location, and known crop properties.
 
 🌾 Background
 Each analysis request includes:
@@ -78,6 +95,8 @@ Each analysis request includes:
 - Latitude and Longitude: {latitude}, {longitude}
 - NDVI Time Series: {ndvi_formatted}
 - Rainfall Time Series: {rainfall_formatted}
+- Temperature Data: {temp_formatted}
+- Growing Degree Days: {gdd_formatted}
 - Analysis Date Range: {date_range}
 
 🎓 Agronomic Intelligence to Assume:
@@ -86,23 +105,28 @@ Each analysis request includes:
   - Early NDVI rise expected ~2 weeks after planting
   - Peak NDVI: ~60--80 days after planting
   - Senescence onset: NDVI may drop after ~100--120 days
+  - GDD for emergence: 90-120, silking: 700-800, maturity: 1350-1450
 - **Soybeans:**
   - Planting window: Late Nov--Dec
   - Shorter lifecycle (~110 days)
+  - GDD for emergence: 70-90, flowering: 550-600, maturity: 1100-1200
 - **Wheat:**
   - Winter wheat planted May--Jun (irrigated)
   - Spring wheat typically Nov--Dec (rainfed)
+  - GDD for emergence: 80-100, heading: 400-500, maturity: 800-900
 - If crop/variety is unknown or labeled 'testing', use general NDVI + rainfall pattern logic and suggest entering known values for deeper insights.
 
 🧠 Your Analysis Must Include:
 1. NDVI Pattern Interpretation (flat, rising, declining)
-2. Rainfall Response (rainfed crop triggers, dry periods)
-3. Crop Status Summary (bare soil, emergence, stress, maturity)
-4. Planting Date Inference (estimate based on NDVI/rainfall)
-5. Confidence Rating (High, Medium, Low)
+2. Temperature & GDD Implications (if data available)
+3. Rainfall Response (rainfed crop triggers, dry periods)
+4. Crop Status Summary (bare soil, emergence, stress, maturity)
+5. Planting Date Inference (estimate based on NDVI/rainfall/GDD)
+6. Confidence Rating (High, Medium, Low)
 
 🧭 Examples of Language to Use:
 - "NDVI remained flat at ~0.18, indicating bare soil or no active vegetation."
+- "Rising temperatures and accumulated GDD of 120 indicate favorable conditions for emergence."
 - "NDVI increase after Dec 3 suggests planting occurred in late Nov."
 - "Rainfall was insufficient to support rainfed planting."
 - "NDVI decline suggests senescence or water stress."
@@ -210,6 +234,14 @@ def generate_ndvi():
         # Validate inputs
         if not coords or not start or not end:
             return jsonify({"success": False, "error": "Missing input fields"}), 400
+        
+        # Validate polygon geometry
+        if not isinstance(coords, list) or len(coords) == 0:
+            return jsonify({"success": False, "error": "Invalid coordinates format"}), 400
+            
+        # Ensure we have a valid polygon (at least 3 points)
+        if len(coords[0]) < 3:
+            return jsonify({"success": False, "error": "Invalid polygon: must have at least 3 points"}), 400
         
         # Log incoming request
         print(f"Processing request: start={start}, end={end}, coords length={len(coords)}")
@@ -369,8 +401,16 @@ def generate_ndvi_timeseries():
         if not coords or not start or not end:
             return jsonify({"success": False, "error": "Missing input fields"}), 400
         
+        # Validate polygon geometry
+        if not isinstance(coords, list) or len(coords) == 0:
+            return jsonify({"success": False, "error": "Invalid coordinates format"}), 400
+            
+        # Ensure we have a valid polygon (at least 3 points)
+        if len(coords[0]) < 3:
+            return jsonify({"success": False, "error": "Invalid polygon: must have at least 3 points"}), 400
+        
         # Log incoming request
-        print(f"Processing time series request: start={start}, end={end}, coords length={len(coords)}")
+        print(f"Processing time series request: start={start}, end={end}, coords length={len(coords[0])}")
         
         # Create Earth Engine geometry
         polygon = ee.Geometry.Polygon(coords)
@@ -441,6 +481,14 @@ def generate_ndvi_timeseries():
                     "ndvi": ndvi_value,
                     "cloud_percentage": cloud_percentage
                 })
+        
+        # Verify we have sufficient data points
+        if len(ndvi_time_series) == 0:
+            return jsonify({
+                "success": False, 
+                "error": "No valid NDVI readings could be calculated for this field",
+                "empty_time_series": True
+            }), 404
         
         # Sort time series by date
         ndvi_time_series.sort(key=lambda x: x["date"])
