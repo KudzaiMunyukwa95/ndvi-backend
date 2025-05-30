@@ -141,6 +141,147 @@ def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_thr
     
     return None
 
+# NEW FUNCTION: Detect post-tillage emergence and estimate planting window
+def detect_post_tillage_emergence(ndvi_data, crop_type, tillage_date, irrigated, rainfall_data=None):
+    """
+    Detects emergence after a tillage event and estimates planting window.
+    
+    Args:
+        ndvi_data: List of NDVI readings with date and ndvi value
+        crop_type: Type of crop (determines emergence window)
+        tillage_date: Date of the tillage event (when NDVI was at its lowest)
+        irrigated: Whether the field is irrigated
+        rainfall_data: List of rainfall readings (for rainfed fields)
+        
+    Returns:
+        Dictionary with information about the post-tillage emergence and planting window
+    """
+    # Sort NDVI data by date
+    sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+    
+    # Convert tillage_date to datetime object
+    tillage_date_obj = datetime.strptime(tillage_date, '%Y-%m-%d')
+    
+    # Filter NDVI data to only include readings after the tillage date
+    post_tillage_ndvi = [point for point in sorted_ndvi if datetime.strptime(point['date'], '%Y-%m-%d') >= tillage_date_obj]
+    
+    # If no post-tillage data, we can't estimate emergence
+    if not post_tillage_ndvi or len(post_tillage_ndvi) < 2:
+        return {
+            "emergenceDate": None,
+            "plantingWindowStart": None,
+            "plantingWindowEnd": None,
+            "preEstablished": False,
+            "confidence": "low",
+            "message": "Insufficient data after tillage event to detect emergence.",
+            "tillage_date": tillage_date
+        }
+    
+    # Find the emergence date after tillage (when NDVI rises above threshold)
+    emergence_date = None
+    emergence_index = -1
+    
+    # Check for clear emergence point (crossing EMERGENCE_THRESHOLD)
+    for i in range(len(post_tillage_ndvi) - 1):
+        if post_tillage_ndvi[i]['ndvi'] < EMERGENCE_THRESHOLD and post_tillage_ndvi[i + 1]['ndvi'] >= EMERGENCE_THRESHOLD:
+            emergence_date = post_tillage_ndvi[i + 1]['date']
+            emergence_index = i + 1
+            break
+    
+    # If no clear emergence, look for significant rise in NDVI
+    if not emergence_date:
+        # Look for any significant rise in NDVI (even if below threshold)
+        for i in range(len(post_tillage_ndvi) - 1):
+            ndvi_increase = post_tillage_ndvi[i + 1]['ndvi'] - post_tillage_ndvi[i]['ndvi']
+            if ndvi_increase > 0.05:  # Significant rise threshold
+                emergence_date = post_tillage_ndvi[i + 1]['date']
+                emergence_index = i + 1
+                break
+    
+    # If still no emergence detected
+    if not emergence_date:
+        return {
+            "emergenceDate": None,
+            "plantingWindowStart": None,
+            "plantingWindowEnd": None,
+            "preEstablished": False,
+            "confidence": "low",
+            "message": "No clear emergence pattern detected after tillage event.",
+            "tillage_date": tillage_date
+        }
+    
+    # Get emergence window for the crop type
+    emergence_window = EMERGENCE_WINDOWS.get(crop_type, DEFAULT_EMERGENCE_WINDOW)
+    
+    # Calculate planting window by rolling back from emergence date
+    emergence_date_obj = datetime.strptime(emergence_date, '%Y-%m-%d')
+    planting_window_end = (emergence_date_obj - timedelta(days=emergence_window[0])).strftime('%Y-%m-%d')
+    planting_window_start = (emergence_date_obj - timedelta(days=emergence_window[1])).strftime('%Y-%m-%d')
+    
+    # If field is rainfed, check for significant rainfall events before emergence but after tillage
+    rainfall_adjusted_planting = None
+    if irrigated == "No" and rainfall_data:
+        # Filter rainfall events between tillage and emergence
+        significant_rainfall_events = []
+        for event in rainfall_data:
+            event_date = event.get('date')
+            if not event_date:
+                continue
+            
+            try:
+                event_date_obj = datetime.strptime(event_date, '%Y-%m-%d')
+                if (tillage_date_obj <= event_date_obj < emergence_date_obj and
+                    event.get('rainfall', 0) >= SIGNIFICANT_RAINFALL):
+                    significant_rainfall_events.append(event)
+            except Exception as e:
+                print(f"Error processing rainfall event: {e}")
+                continue
+        
+        # If significant rainfall events found, adjust estimate
+        if significant_rainfall_events:
+            # Sort rainfall events by date
+            significant_rainfall_events.sort(key=lambda x: x['date'])
+            
+            # Use the first significant rainfall as the likely planting date
+            rainfall_adjusted_planting = significant_rainfall_events[0]['date']
+            print(f"Found rainfall-adjusted planting date after tillage: {rainfall_adjusted_planting}")
+    
+    # Determine confidence level
+    confidence = "medium"
+    
+    # Higher confidence if we have good NDVI data and clear pattern
+    if len(post_tillage_ndvi) >= 4 and emergence_index > 0 and emergence_index < len(post_tillage_ndvi) - 1:
+        confidence = "high"
+    
+    # Lower confidence if sparse data or emergence is at the edge of the dataset
+    if len(post_tillage_ndvi) < 3 or emergence_index == 0 or emergence_index == len(post_tillage_ndvi) - 1:
+        confidence = "low"
+    
+    # Format dates for display
+    tillage_display = format_date_for_display(tillage_date)
+    emergence_display = format_date_for_display(emergence_date)
+    planting_start_display = format_date_for_display(planting_window_start)
+    planting_end_display = format_date_for_display(planting_window_end)
+    
+    # Create message about tillage and subsequent planting
+    if rainfall_adjusted_planting:
+        rainfall_date_display = format_date_for_display(rainfall_adjusted_planting)
+        message = f"The crop appears to have been initially established before the analysis period. However, a sharp NDVI decline around {tillage_display} followed by a steady increase suggests a tillage or replanting event, with new emergence detected around {emergence_display}. Rainfall data suggests replanting likely occurred around {rainfall_date_display}."
+    else:
+        message = f"The crop appears to have been initially established before the analysis period. However, a sharp NDVI decline around {tillage_display} followed by a steady increase suggests a tillage or replanting event, with new emergence likely occurring around {emergence_display}. This indicates a likely replanting window between {planting_start_display} and {planting_end_display}."
+    
+    return {
+        "emergenceDate": emergence_date,
+        "plantingWindowStart": planting_window_start,
+        "plantingWindowEnd": planting_window_end,
+        "rainfallAdjustedPlanting": rainfall_adjusted_planting,
+        "preEstablished": False,
+        "confidence": confidence,
+        "message": message,
+        "tillage_date": tillage_date,
+        "tillage_replanting_detected": True
+    }
+
 # Function to detect emergence and estimate planting window
 def detect_emergence_and_estimate_planting(ndvi_data, crop_type, irrigated, rainfall_data=None):
     # Sort NDVI data by date
@@ -378,29 +519,17 @@ def generate_agronomic_report():
                     for c in top_changes
                 ])
         
-        # Check for consistently high NDVI values
-        consistently_high_ndvi = False
-        if ndvi_data:
-            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
-            ndvi_values = [item['ndvi'] for item in sorted_ndvi]
-            # Consider consistently high if all values are above 0.4
-            if all(val > 0.4 for val in ndvi_values):
-                consistently_high_ndvi = True
-                high_ndvi_min = min(ndvi_values)
-                high_ndvi_max = max(ndvi_values)
-                high_ndvi_avg = sum(ndvi_values) / len(ndvi_values)
-                print(f"Detected consistently high NDVI: min={high_ndvi_min:.2f}, max={high_ndvi_max:.2f}, avg={high_ndvi_avg:.2f}")
-        
         # Analyze NDVI patterns to detect possible tillage/replanting scenarios
         tillage_replanting_detected = False
         tillage_info = "No tillage or replanting pattern detected"
+        tillage_date = None
+        drop_start_idx = -1
+        drop_end_idx = -1
         
-        if len(ndvi_data) >= 3 and not consistently_high_ndvi:
+        if len(ndvi_data) >= 3:
             sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
             # Look for high -> low -> high pattern
             max_drop = 0
-            drop_start_idx = -1
-            drop_end_idx = -1
             
             for i in range(1, len(sorted_ndvi)):
                 current_drop = sorted_ndvi[i-1]['ndvi'] - sorted_ndvi[i]['ndvi']
@@ -420,15 +549,51 @@ def generate_agronomic_report():
                 
                 if subsequent_rise:
                     tillage_replanting_detected = True
+                    tillage_date = sorted_ndvi[drop_end_idx]['date']
                     tillage_info = (f"Potential tillage/replanting detected: NDVI dropped from {sorted_ndvi[drop_start_idx]['ndvi']:.2f} "
                                    f"to {sorted_ndvi[drop_end_idx]['ndvi']:.2f} around {sorted_ndvi[drop_end_idx]['date']}, "
                                    f"then rose again afterward")
+                    print(f"Tillage/replanting detected on {tillage_date}")
+        
+        # Check for consistently high NDVI values - ONLY if no tillage/replanting pattern detected
+        consistently_high_ndvi = False
+        if ndvi_data and not tillage_replanting_detected:
+            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+            ndvi_values = [item['ndvi'] for item in sorted_ndvi]
+            # Consider consistently high if all values are above 0.4
+            if all(val > 0.4 for val in ndvi_values):
+                consistently_high_ndvi = True
+                high_ndvi_min = min(ndvi_values)
+                high_ndvi_max = max(ndvi_values)
+                high_ndvi_avg = sum(ndvi_values) / len(ndvi_values)
+                print(f"Detected consistently high NDVI: min={high_ndvi_min:.2f}, max={high_ndvi_max:.2f}, avg={high_ndvi_avg:.2f}")
         
         # Smart planting date estimation
         planting_date_results = None
         planting_window_text = None
         
-        if not consistently_high_ndvi and ndvi_data and len(ndvi_data) > 1:
+        # If tillage/replanting detected, use specialized function
+        if tillage_replanting_detected and tillage_date:
+            try:
+                print(f"Using post-tillage emergence detection for tillage date: {tillage_date}")
+                planting_date_results = detect_post_tillage_emergence(
+                    ndvi_data=ndvi_data,
+                    crop_type=crop,
+                    tillage_date=tillage_date,
+                    irrigated=irrigated,
+                    rainfall_data=rainfall_data if irrigated == "No" else None
+                )
+                
+                # Use the message from the post-tillage function
+                planting_window_text = planting_date_results["message"]
+                print(f"Post-tillage planting window: {planting_window_text}")
+                
+            except Exception as e:
+                print(f"Error estimating post-tillage planting window: {e}")
+                planting_window_text = "Error estimating planting window after tillage event."
+        
+        # Otherwise use regular planting date estimation
+        elif not consistently_high_ndvi and ndvi_data and len(ndvi_data) > 1:
             try:
                 planting_date_results = detect_emergence_and_estimate_planting(
                     ndvi_data=ndvi_data, 
@@ -462,14 +627,27 @@ def generate_agronomic_report():
                 print(f"Error estimating planting window: {e}")
                 planting_window_text = "Error estimating planting window."
         
-        # Create special instruction for consistently high NDVI
+        # Create special instruction for consistently high NDVI (only if no tillage/replanting)
         high_ndvi_instruction = ""
-        if consistently_high_ndvi:
+        if consistently_high_ndvi and not tillage_replanting_detected:
             high_ndvi_instruction = """
 IMPORTANT: The NDVI data shows consistently high values (>0.4) throughout the entire analysis period. 
 This indicates the crop was already well-established before the analysis period began.
 DO NOT attempt to estimate a planting date. Instead, clearly state that the crop was already established
 before the beginning of the analysis period.
+"""
+        
+        # Create special instruction for tillage/replanting
+        tillage_instruction = ""
+        if tillage_replanting_detected:
+            tillage_instruction = f"""
+IMPORTANT: The NDVI data shows a clear tillage or replanting pattern with initial high values 
+followed by a sharp decline around {format_date_for_display(tillage_date)} and then a steady rise afterward.
+This pattern indicates an initial crop was established, then the field was tilled or harvested,
+followed by new crop emergence. 
+
+DO NOT conclude that "the crop was already established before the analysis period began" - 
+this would ignore the second crop cycle. Instead, highlight the tillage/replanting event and subsequent regrowth.
 """
         
         # Create planting date instruction
@@ -487,6 +665,7 @@ DO NOT modify it, rephrase it, or use different dates.
         prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, {'rainfall data, ' if irrigated == 'No' else ''}temperature patterns, GDD information, field location, and known crop properties.
 
 {high_ndvi_instruction}
+{tillage_instruction}
 {planting_date_instruction}
 
 🌾 Background
@@ -526,7 +705,7 @@ Each analysis request includes:
 - Pay attention to NDVI change rate/slope to distinguish between rapid emergence, flat periods, or potential stress.
 - For irrigated fields, focus on NDVI patterns, temperature, and GDD rather than rainfall.
 - Always use the exact planting date statement provided above. Do not create your own planting date estimate.
-- If NDVI values remain consistently high throughout the period (all above 0.4), conclude that the crop was already established before the analysis period began.
+- If NDVI values remain consistently high throughout the period (all above 0.4) AND no tillage pattern is detected, conclude that the crop was already established before the analysis period began.
 - For rainfed fields where significant rainfall (>10mm) occurred but NDVI remained low (<0.2), this may indicate planting failure or poor germination. In these cases, mention this possibility as provided in the planting date statement.
 
 🧠 Your Analysis Must Include:
@@ -590,8 +769,8 @@ Respond in 2--3 sentences as a trained agronomist advising a field agent or insu
                     confidence_level = "high"
                     print(f"Boosted confidence to high based on data quality: {len(ndvi_data)} observations, {avg_cloud_cover:.1f}% cloud cover")
             
-            # If we detected consistently high NDVI, set confidence high since we're confident crop was pre-established
-            if consistently_high_ndvi:
+            # If we detected consistently high NDVI (but no tillage), set confidence high
+            if consistently_high_ndvi and not tillage_replanting_detected:
                 confidence_level = "high"
                 print("Set confidence to high for consistently high NDVI pattern (pre-established crop)")
             
@@ -606,7 +785,7 @@ Respond in 2--3 sentences as a trained agronomist advising a field agent or insu
                 "insight": insight,
                 "confidence_level": confidence_level,
                 "tillage_detected": tillage_replanting_detected,
-                "consistently_high_ndvi": consistently_high_ndvi
+                "consistently_high_ndvi": consistently_high_ndvi and not tillage_replanting_detected
             }
             
             # Add planting date estimation if available
@@ -616,11 +795,13 @@ Respond in 2--3 sentences as a trained agronomist advising a field agent or insu
                     "planting_window_start": planting_date_results.get("plantingWindowStart"),
                     "planting_window_end": planting_date_results.get("plantingWindowEnd"),
                     "rainfall_adjusted_planting": planting_date_results.get("rainfallAdjustedPlanting"),
-                    "pre_established": planting_date_results.get("preEstablished", False),
+                    "pre_established": planting_date_results.get("preEstablished", False) and not tillage_replanting_detected,
                     "confidence": planting_date_results.get("confidence"),
                     "message": planting_date_results.get("message"),
                     "formatted_planting_window": planting_window_text,
-                    "rainfall_without_emergence": planting_date_results.get("rainfall_without_emergence", False)
+                    "rainfall_without_emergence": planting_date_results.get("rainfall_without_emergence", False),
+                    "tillage_replanting_detected": tillage_replanting_detected,
+                    "tillage_date": tillage_date if tillage_replanting_detected else None
                 }
             
             return jsonify(response_data)
