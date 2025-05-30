@@ -39,6 +39,108 @@ SIGNIFICANT_RAINFALL = 10  # mm, threshold for significant rainfall
 def index():
     return "NDVI & RGB backend is live!"
 
+# NEW FUNCTION: Detect rainfall trigger events without NDVI response
+def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_threshold=10, ndvi_threshold=0.2, response_window_days=14):
+    """
+    Detect significant rainfall events that aren't followed by crop emergence.
+    
+    Args:
+        ndvi_data: List of NDVI readings with date and ndvi value
+        rainfall_data: List of rainfall readings with date and rainfall value
+        min_rainfall_threshold: Minimum rainfall to consider significant (mm)
+        ndvi_threshold: NDVI threshold below which we consider no emergence
+        response_window_days: Number of days to check for NDVI response after rainfall
+    
+    Returns:
+        Dictionary with information about potential planting failure events
+    """
+    if not rainfall_data or not ndvi_data:
+        return None
+    
+    # Sort data by date
+    sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+    sorted_rainfall = sorted(rainfall_data, key=lambda x: x['date'])
+    
+    # Detect significant rainfall events (>10mm)
+    significant_rainfall_events = []
+    
+    for event in sorted_rainfall:
+        try:
+            if event.get('rainfall', 0) >= min_rainfall_threshold:
+                significant_rainfall_events.append({
+                    'date': event['date'],
+                    'rainfall': event['rainfall']
+                })
+        except (KeyError, TypeError) as e:
+            print(f"Error processing rainfall event: {e}")
+            continue
+    
+    # If no significant rainfall events found, return None
+    if not significant_rainfall_events:
+        return None
+    
+    # Check each significant rainfall event
+    failure_events = []
+    
+    for rain_event in significant_rainfall_events:
+        rain_date = datetime.strptime(rain_event['date'], '%Y-%m-%d')
+        rain_date_str = rain_event['date']
+        
+        # Define the response window period
+        response_end_date = rain_date + timedelta(days=response_window_days)
+        
+        # Find NDVI readings in the response window period
+        window_ndvi_readings = []
+        for ndvi_point in sorted_ndvi:
+            try:
+                ndvi_date = datetime.strptime(ndvi_point['date'], '%Y-%m-%d')
+                if rain_date <= ndvi_date <= response_end_date:
+                    window_ndvi_readings.append(ndvi_point)
+            except (ValueError, KeyError) as e:
+                print(f"Error processing NDVI date: {e}")
+                continue
+        
+        # Analyze NDVI readings in response window
+        if window_ndvi_readings:
+            # If we have at least 2 readings in the window
+            if len(window_ndvi_readings) >= 2:
+                # Check if all NDVI readings remain below threshold
+                all_below_threshold = all(reading['ndvi'] < ndvi_threshold for reading in window_ndvi_readings)
+                
+                # Calculate the time span of the readings
+                first_date = datetime.strptime(window_ndvi_readings[0]['date'], '%Y-%m-%d')
+                last_date = datetime.strptime(window_ndvi_readings[-1]['date'], '%Y-%m-%d')
+                days_span = (last_date - first_date).days
+                
+                # Only consider it a failure if we have at least 7 days of low NDVI readings
+                if all_below_threshold and days_span >= 7:
+                    failure_events.append({
+                        'rainfall_date': rain_date_str,
+                        'rainfall_amount': rain_event['rainfall'],
+                        'ndvi_readings': len(window_ndvi_readings),
+                        'max_ndvi': max(reading['ndvi'] for reading in window_ndvi_readings),
+                        'days_monitored': days_span
+                    })
+    
+    # Return the most recent failure event if any found
+    if failure_events:
+        # Sort by rainfall date, most recent first
+        failure_events.sort(key=lambda x: x['rainfall_date'], reverse=True)
+        
+        selected_event = failure_events[0]
+        rainfall_date = format_date_for_display(selected_event['rainfall_date'])
+        
+        return {
+            'detected': True,
+            'message': f"Significant rainfall occurred around {rainfall_date} ({selected_event['rainfall_amount']:.1f}mm), which may have provided a planting opportunity. However, no NDVI response was observed in the following {selected_event['days_monitored']} days, suggesting either planting did not occur or the crop failed to emerge. This may indicate poor germination conditions or unsuccessful crop establishment.",
+            'confidence': "low",
+            'rainfall_date': selected_event['rainfall_date'],
+            'rainfall_amount': selected_event['rainfall_amount'],
+            'max_ndvi': selected_event['max_ndvi']
+        }
+    
+    return None
+
 # Function to detect emergence and estimate planting window
 def detect_emergence_and_estimate_planting(ndvi_data, crop_type, irrigated, rainfall_data=None):
     # Sort NDVI data by date
@@ -78,6 +180,21 @@ def detect_emergence_and_estimate_planting(ndvi_data, crop_type, irrigated, rain
         
         # If still nothing, we can't determine emergence
         if not emergence_date:
+            # NEW: For rainfed fields, check if there was rainfall without emergence
+            if irrigated == "No" and rainfall_data:
+                rainfall_failure = detect_rainfall_without_emergence(ndvi_data, rainfall_data)
+                if rainfall_failure and rainfall_failure['detected']:
+                    return {
+                        "emergenceDate": None,
+                        "plantingWindowStart": None,
+                        "plantingWindowEnd": None,
+                        "preEstablished": False,
+                        "confidence": "low",
+                        "message": rainfall_failure['message'],
+                        "rainfall_without_emergence": True,
+                        "rainfall_date": rainfall_failure['rainfall_date']
+                    }
+            
             return {
                 "emergenceDate": None,
                 "plantingWindowStart": None,
@@ -307,7 +424,7 @@ def generate_agronomic_report():
                                    f"to {sorted_ndvi[drop_end_idx]['ndvi']:.2f} around {sorted_ndvi[drop_end_idx]['date']}, "
                                    f"then rose again afterward")
         
-        # NEW ADDITION: Smart planting date estimation
+        # Smart planting date estimation
         planting_date_results = None
         planting_window_text = None
         
@@ -323,6 +440,9 @@ def generate_agronomic_report():
                 # Format planting window for the prompt
                 if planting_date_results["preEstablished"]:
                     planting_window_text = "Crop was already established before the analysis period began."
+                elif "rainfall_without_emergence" in planting_date_results and planting_date_results["rainfall_without_emergence"]:
+                    # Handle the new case of rainfall without emergence
+                    planting_window_text = planting_date_results["message"]
                 elif planting_date_results["plantingWindowStart"] and planting_date_results["plantingWindowEnd"]:
                     start_formatted = format_date_for_display(planting_date_results["plantingWindowStart"])
                     end_formatted = format_date_for_display(planting_date_results["plantingWindowEnd"])
@@ -352,7 +472,7 @@ DO NOT attempt to estimate a planting date. Instead, clearly state that the crop
 before the beginning of the analysis period.
 """
         
-        # NEW: Create planting date instruction
+        # Create planting date instruction
         planting_date_instruction = ""
         if planting_window_text:
             planting_date_instruction = f"""
@@ -407,6 +527,7 @@ Each analysis request includes:
 - For irrigated fields, focus on NDVI patterns, temperature, and GDD rather than rainfall.
 - Always use the exact planting date statement provided above. Do not create your own planting date estimate.
 - If NDVI values remain consistently high throughout the period (all above 0.4), conclude that the crop was already established before the analysis period began.
+- For rainfed fields where significant rainfall (>10mm) occurred but NDVI remained low (<0.2), this may indicate planting failure or poor germination. In these cases, mention this possibility as provided in the planting date statement.
 
 🧠 Your Analysis Must Include:
 1. NDVI Pattern Interpretation (flat, rising, declining, or mixed patterns including tillage events)
@@ -425,6 +546,7 @@ Each analysis request includes:
 - "NDVI decline suggests senescence or water stress."
 - "Crop variety is unrecognized -- general vegetation analysis applied."
 - "NDVI values remained consistently high throughout the period, suggesting the crop was already established before the analysis period began."
+- "Despite significant rainfall on April 15, the lack of NDVI response suggests potential planting failure or poor germination conditions."
 
 🧵 Output Format:
 Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Always include the exact planting date statement provided above. Avoid referencing GPT, AI, or farmer-declared dates."""
@@ -473,6 +595,11 @@ Respond in 2--4 sentences as a trained agronomist advising a field agent or insu
                 confidence_level = "high"
                 print("Set confidence to high for consistently high NDVI pattern (pre-established crop)")
             
+            # If we detected rainfall without emergence, ensure confidence is low
+            if planting_date_results and "rainfall_without_emergence" in planting_date_results and planting_date_results["rainfall_without_emergence"]:
+                confidence_level = "low"
+                print("Set confidence to low for rainfall without emergence pattern")
+            
             # Add planting date estimation results to the response
             response_data = {
                 "success": True,
@@ -492,7 +619,8 @@ Respond in 2--4 sentences as a trained agronomist advising a field agent or insu
                     "pre_established": planting_date_results.get("preEstablished", False),
                     "confidence": planting_date_results.get("confidence"),
                     "message": planting_date_results.get("message"),
-                    "formatted_planting_window": planting_window_text
+                    "formatted_planting_window": planting_window_text,
+                    "rainfall_without_emergence": planting_date_results.get("rainfall_without_emergence", False)
                 }
             
             return jsonify(response_data)
