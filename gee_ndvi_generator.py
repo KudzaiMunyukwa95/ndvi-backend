@@ -2,6 +2,7 @@ import os
 import json
 import ee
 import traceback
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
@@ -36,7 +37,6 @@ def generate_agronomic_report():
         date_range = data.get("date_range", "Unknown period")
         ndvi_data = data.get("ndvi_data", [])
         rainfall_data = data.get("rainfall_data", [])
-        estimated_planting_date = data.get("estimated_planting_date")
         temperature_data = data.get("temperature_data", [])
         gdd_data = data.get("gdd_data", [])
         gdd_stats = data.get("gdd_stats", {})
@@ -57,7 +57,9 @@ def generate_agronomic_report():
         
         # Process rainfall data into weekly totals if available
         weekly_rainfall = {}
-        if rainfall_data:
+        if irrigated == "Yes":
+            rainfall_formatted = "Not applicable for irrigated fields"
+        elif rainfall_data:
             for item in rainfall_data:
                 date = item.get('date')
                 if date:
@@ -84,8 +86,84 @@ def generate_agronomic_report():
         if gdd_stats:
             gdd_formatted = f"Cumulative GDD: {gdd_stats.get('total_gdd', 'N/A')}, Avg daily GDD: {gdd_stats.get('avg_daily_gdd', 'N/A')}, Base temp: {base_temperature}°C"
         
-        # Construct prompt with enhanced information including temperature and GDD
-        prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, rainfall data, temperature patterns, GDD information, field location, and known crop properties.
+        # Calculate NDVI change rate if we have enough data points
+        ndvi_change_rates = []
+        if len(ndvi_data) > 1:
+            # Sort data by date
+            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+            
+            # Calculate change rates
+            for i in range(1, len(sorted_ndvi)):
+                try:
+                    date1 = datetime.strptime(sorted_ndvi[i-1]['date'], '%Y-%m-%d')
+                    date2 = datetime.strptime(sorted_ndvi[i]['date'], '%Y-%m-%d')
+                    days_diff = (date2 - date1).days
+                    
+                    if days_diff > 0:  # Avoid division by zero
+                        ndvi_diff = sorted_ndvi[i]['ndvi'] - sorted_ndvi[i-1]['ndvi']
+                        change_rate = ndvi_diff / days_diff
+                        ndvi_change_rates.append({
+                            'start_date': sorted_ndvi[i-1]['date'],
+                            'end_date': sorted_ndvi[i]['date'],
+                            'days': days_diff,
+                            'change_rate': change_rate,
+                            'total_change': ndvi_diff
+                        })
+                except Exception as e:
+                    print(f"Error calculating NDVI change rate: {e}")
+
+        # Format NDVI change rate data for the prompt
+        ndvi_change_formatted = "No data"
+        if ndvi_change_rates:
+            # Find the periods with significant changes
+            significant_changes = [r for r in ndvi_change_rates if abs(r['change_rate']) > 0.005]  # 0.005 per day is significant
+            
+            if significant_changes:
+                # Sort by absolute change rate
+                significant_changes.sort(key=lambda x: abs(x['change_rate']), reverse=True)
+                
+                # Format top 3 changes
+                top_changes = significant_changes[:3]
+                ndvi_change_formatted = ", ".join([
+                    f"{c['start_date']} to {c['end_date']}: {c['change_rate']*100:.2f}% per day ({c['total_change']:.2f} over {c['days']} days)"
+                    for c in top_changes
+                ])
+        
+        # Analyze NDVI patterns to detect possible tillage/replanting scenarios
+        tillage_replanting_detected = False
+        tillage_info = "No tillage or replanting pattern detected"
+        
+        if len(ndvi_data) >= 3:
+            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+            # Look for high -> low -> high pattern
+            max_drop = 0
+            drop_start_idx = -1
+            drop_end_idx = -1
+            
+            for i in range(1, len(sorted_ndvi)):
+                current_drop = sorted_ndvi[i-1]['ndvi'] - sorted_ndvi[i]['ndvi']
+                if current_drop > max_drop and current_drop > 0.15 and sorted_ndvi[i-1]['ndvi'] > 0.3:
+                    max_drop = current_drop
+                    drop_start_idx = i-1
+                    drop_end_idx = i
+            
+            # If we found a significant drop, check if NDVI rises again afterward
+            if drop_start_idx >= 0 and drop_end_idx < len(sorted_ndvi) - 1:
+                # Look for subsequent rise
+                subsequent_rise = False
+                for i in range(drop_end_idx + 1, len(sorted_ndvi)):
+                    if sorted_ndvi[i]['ndvi'] > sorted_ndvi[drop_end_idx]['ndvi'] + 0.1:
+                        subsequent_rise = True
+                        break
+                
+                if subsequent_rise:
+                    tillage_replanting_detected = True
+                    tillage_info = (f"Potential tillage/replanting detected: NDVI dropped from {sorted_ndvi[drop_start_idx]['ndvi']:.2f} "
+                                   f"to {sorted_ndvi[drop_end_idx]['ndvi']:.2f} around {sorted_ndvi[drop_end_idx]['date']}, "
+                                   f"then rose again afterward")
+        
+        # Construct prompt with enhanced information including tillage detection, NDVI change rates
+        prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, {'rainfall data, ' if irrigated == 'No' else ''}temperature patterns, GDD information, field location, and known crop properties.
 
 🌾 Background
 Each analysis request includes:
@@ -94,7 +172,9 @@ Each analysis request includes:
 - Irrigation Status: {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
 - Latitude and Longitude: {latitude}, {longitude}
 - NDVI Time Series: {ndvi_formatted}
-- Rainfall Time Series: {rainfall_formatted}
+- NDVI Change Rate Analysis: {ndvi_change_formatted}
+- Tillage Pattern Analysis: {tillage_info}
+{'' if irrigated == 'Yes' else f'- Rainfall Time Series: {rainfall_formatted}'}
 - Temperature Data: {temp_formatted}
 - Growing Degree Days: {gdd_formatted}
 - Analysis Date Range: {date_range}
@@ -114,26 +194,35 @@ Each analysis request includes:
   - Winter wheat planted May--Jun (irrigated)
   - Spring wheat typically Nov--Dec (rainfed)
   - GDD for emergence: 80-100, heading: 400-500, maturity: 800-900
-- If crop/variety is unknown or labeled 'testing', use general NDVI + rainfall pattern logic and suggest entering known values for deeper insights.
+- If crop/variety is unknown or labeled 'testing', use general NDVI pattern logic and suggest entering known values for deeper insights.
+
+📌 Special Case Guidance:
+- If NDVI starts high but drops to bare soil levels (<0.2) and then rises again, assume a new planting occurred within the date range.
+- Do not conclude that the field was already planted if a tillage-then-emergence pattern is detected.
+- Pay attention to NDVI change rate/slope to distinguish between rapid emergence, flat periods, or potential stress.
+- For irrigated fields, focus on NDVI patterns, temperature, and GDD rather than rainfall.
+- Always attempt to infer a planting date based on all available data.
 
 🧠 Your Analysis Must Include:
-1. NDVI Pattern Interpretation (flat, rising, declining)
+1. NDVI Pattern Interpretation (flat, rising, declining, or mixed patterns including tillage events)
 2. Temperature & GDD Implications (if data available)
-3. Rainfall Response (rainfed crop triggers, dry periods)
-4. Crop Status Summary (bare soil, emergence, stress, maturity)
-5. Planting Date Inference (estimate based on NDVI/rainfall/GDD)
+3. {'Rainfall Response (rainfed crop triggers, dry periods)' if irrigated == 'No' else 'Irrigation & Crop Management Implications'}
+4. Crop Status Summary (bare soil, emergence, stress, maturity, potential replanting)
+5. Planting Date Inference - estimate based on NDVI patterns, {'rainfall, ' if irrigated == 'No' else ''}temperature and GDD
 6. Confidence Rating (High, Medium, Low)
 
 🧭 Examples of Language to Use:
 - "NDVI remained flat at ~0.18, indicating bare soil or no active vegetation."
+- "The NDVI drop from 0.6 to 0.2 followed by a rise suggests tillage and replanting occurred in mid-December."
 - "Rising temperatures and accumulated GDD of 120 indicate favorable conditions for emergence."
+- "NDVI shows a rapid increase rate of 0.05 per day after Jan 15, indicating vigorous early growth."
 - "NDVI increase after Dec 3 suggests planting occurred in late Nov."
-- "Rainfall was insufficient to support rainfed planting."
+{'' if irrigated == 'Yes' else '- "Rainfall was insufficient to support rainfed planting."'}
 - "NDVI decline suggests senescence or water stress."
 - "Crop variety is unrecognized -- general vegetation analysis applied."
 
 🧵 Output Format:
-Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Avoid referencing GPT, AI, or farmer-declared dates."""
+Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Always include your estimated planting date if you can determine one. Avoid referencing GPT, AI, or farmer-declared dates."""
 
         # Call OpenAI API
         try:
@@ -172,7 +261,8 @@ Respond in 2--4 sentences as a trained agronomist advising a field agent or insu
             return jsonify({
                 "success": True,
                 "insight": insight,
-                "confidence_level": confidence_level
+                "confidence_level": confidence_level,
+                "tillage_detected": tillage_replanting_detected
             })
             
         except Exception as e:
