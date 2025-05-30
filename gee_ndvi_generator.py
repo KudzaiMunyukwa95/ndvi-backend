@@ -19,14 +19,14 @@ openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # Define crop-specific emergence windows (in days)
 EMERGENCE_WINDOWS = {
-    "Maize": (7, 11),
-    "Soyabeans": (8, 12),
+    "Maize": (6, 10),
+    "Soyabeans": (7, 11),
     "Sorghum": (6, 10),
     "Cotton": (5, 9),
     "Groundnuts": (6, 10),
-    "Barley": (4, 8),
-    "Wheat": (4, 8),
-    "Millet": (3, 7),
+    "Barley": (7, 11),
+    "Wheat": (7, 11),
+    "Millet": (4, 8),
     "Tobacco": (7, 11)  # For nursery emergence
 }
 
