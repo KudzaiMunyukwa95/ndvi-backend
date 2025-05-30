@@ -549,7 +549,7 @@ Each analysis request includes:
 - "Despite significant rainfall on April 15, the lack of NDVI response suggests potential planting failure or poor germination conditions."
 
 🧵 Output Format:
-Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Always include the exact planting date statement provided above. Avoid referencing GPT, AI, or farmer-declared dates."""
+Respond in 2--3 sentences as a trained agronomist advising a field agent or insurer. Always include the exact planting date statement provided above. Avoid referencing GPT, AI, or farmer-declared dates."""
 
         # Call OpenAI API
         try:
