@@ -2,7 +2,7 @@ import os
 import json
 import ee
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
@@ -17,9 +17,141 @@ CORS(app)
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+# Define crop-specific emergence windows (in days)
+EMERGENCE_WINDOWS = {
+    "Maize": (7, 11),
+    "Soyabeans": (8, 12),
+    "Sorghum": (6, 10),
+    "Cotton": (5, 9),
+    "Groundnuts": (6, 10),
+    "Barley": (4, 8),
+    "Wheat": (4, 8),
+    "Millet": (3, 7),
+    "Tobacco": (7, 11)  # For nursery emergence
+}
+
+# Constants for emergence detection
+EMERGENCE_THRESHOLD = 0.2
+DEFAULT_EMERGENCE_WINDOW = (5, 10)  # Default for unknown crops
+SIGNIFICANT_RAINFALL = 10  # mm, threshold for significant rainfall
+
 @app.route("/")
 def index():
     return "NDVI & RGB backend is live!"
+
+# Function to detect emergence and estimate planting window
+def detect_emergence_and_estimate_planting(ndvi_data, crop_type, irrigated, rainfall_data=None):
+    # Sort NDVI data by date
+    sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+    
+    # Find the emergence date (when NDVI consistently rises above threshold)
+    emergence_date = None
+    emergence_index = -1
+    
+    # Find consecutive readings above threshold
+    for i in range(len(sorted_ndvi) - 1):
+        if sorted_ndvi[i]['ndvi'] < EMERGENCE_THRESHOLD and sorted_ndvi[i + 1]['ndvi'] >= EMERGENCE_THRESHOLD:
+            # Found potential emergence point
+            emergence_date = sorted_ndvi[i + 1]['date']
+            emergence_index = i + 1
+            break
+    
+    # If no emergence detected, check if all values are above threshold (pre-established crop)
+    if not emergence_date and sorted_ndvi[0]['ndvi'] >= EMERGENCE_THRESHOLD:
+        return {
+            "emergenceDate": None,
+            "plantingWindowStart": None,
+            "plantingWindowEnd": None,
+            "preEstablished": True,
+            "confidence": "high",
+            "message": "Crop was already established before the analysis period began."
+        }
+    
+    # If still no emergence detected
+    if not emergence_date:
+        # Look for any significant rise in NDVI (even if below threshold)
+        for i in range(len(sorted_ndvi) - 1):
+            if sorted_ndvi[i + 1]['ndvi'] - sorted_ndvi[i]['ndvi'] > 0.05:
+                emergence_date = sorted_ndvi[i + 1]['date']
+                emergence_index = i + 1
+                break
+        
+        # If still nothing, we can't determine emergence
+        if not emergence_date:
+            return {
+                "emergenceDate": None,
+                "plantingWindowStart": None,
+                "plantingWindowEnd": None,
+                "preEstablished": False,
+                "confidence": "low",
+                "message": "No clear emergence pattern detected in NDVI data."
+            }
+    
+    # Get emergence window for the crop type
+    emergence_window = EMERGENCE_WINDOWS.get(crop_type, DEFAULT_EMERGENCE_WINDOW)
+    
+    # Calculate planting window by rolling back from emergence date
+    emergence_date_obj = datetime.strptime(emergence_date, '%Y-%m-%d')
+    planting_window_end = (emergence_date_obj - timedelta(days=emergence_window[0])).strftime('%Y-%m-%d')
+    planting_window_start = (emergence_date_obj - timedelta(days=emergence_window[1])).strftime('%Y-%m-%d')
+    
+    # If field is rainfed, check for significant rainfall events before emergence
+    rainfall_adjusted_planting = None
+    if irrigated == "No" and rainfall_data:
+        # Filter rainfall events before emergence but within the estimated planting window
+        significant_rainfall_events = []
+        for event in rainfall_data:
+            event_date = event.get('date')
+            if not event_date:
+                continue
+            
+            try:
+                event_date_obj = datetime.strptime(event_date, '%Y-%m-%d')
+                if (event_date_obj < emergence_date_obj and 
+                    event_date_obj >= datetime.strptime(planting_window_start, '%Y-%m-%d') and
+                    event.get('rainfall', 0) >= SIGNIFICANT_RAINFALL):
+                    significant_rainfall_events.append(event)
+            except Exception as e:
+                print(f"Error processing rainfall event: {e}")
+                continue
+        
+        # If significant rainfall events found, adjust estimate
+        if significant_rainfall_events:
+            # Sort rainfall events by date
+            significant_rainfall_events.sort(key=lambda x: x['date'])
+            
+            # Use the first significant rainfall as the likely planting date
+            rainfall_adjusted_planting = significant_rainfall_events[0]['date']
+            print(f"Found rainfall-adjusted planting date: {rainfall_adjusted_planting}")
+    
+    # Determine confidence level
+    confidence = "medium"
+    
+    # Higher confidence if we have good NDVI data and clear pattern
+    if len(sorted_ndvi) >= 6 and emergence_index > 0 and emergence_index < len(sorted_ndvi) - 1:
+        confidence = "high"
+    
+    # Lower confidence if sparse data or emergence is at the edge of the dataset
+    if len(sorted_ndvi) < 4 or emergence_index == 0 or emergence_index == len(sorted_ndvi) - 1:
+        confidence = "low"
+    
+    return {
+        "emergenceDate": emergence_date,
+        "plantingWindowStart": planting_window_start,
+        "plantingWindowEnd": planting_window_end,
+        "rainfallAdjustedPlanting": rainfall_adjusted_planting,
+        "preEstablished": False,
+        "confidence": confidence,
+        "message": "Emergence detected with clear pattern."
+    }
+
+# Format date for display (Month Day format)
+def format_date_for_display(date_str):
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        return date_obj.strftime('%B %d')
+    except Exception:
+        return date_str
 
 @app.route("/api/agronomic_insight", methods=["POST"])
 def generate_agronomic_report():
@@ -175,6 +307,41 @@ def generate_agronomic_report():
                                    f"to {sorted_ndvi[drop_end_idx]['ndvi']:.2f} around {sorted_ndvi[drop_end_idx]['date']}, "
                                    f"then rose again afterward")
         
+        # NEW ADDITION: Smart planting date estimation
+        planting_date_results = None
+        planting_window_text = None
+        
+        if not consistently_high_ndvi and ndvi_data and len(ndvi_data) > 1:
+            try:
+                planting_date_results = detect_emergence_and_estimate_planting(
+                    ndvi_data=ndvi_data, 
+                    crop_type=crop, 
+                    irrigated=irrigated,
+                    rainfall_data=rainfall_data if irrigated == "No" else None
+                )
+                
+                # Format planting window for the prompt
+                if planting_date_results["preEstablished"]:
+                    planting_window_text = "Crop was already established before the analysis period began."
+                elif planting_date_results["plantingWindowStart"] and planting_date_results["plantingWindowEnd"]:
+                    start_formatted = format_date_for_display(planting_date_results["plantingWindowStart"])
+                    end_formatted = format_date_for_display(planting_date_results["plantingWindowEnd"])
+                    
+                    # Use rainfall-adjusted date if available for rainfed fields
+                    if irrigated == "No" and planting_date_results["rainfallAdjustedPlanting"]:
+                        rainfall_date = format_date_for_display(planting_date_results["rainfallAdjustedPlanting"])
+                        planting_window_text = f"Likely planted between {start_formatted} and {end_formatted}, with rainfall data suggesting planting occurred around {rainfall_date}."
+                    else:
+                        planting_window_text = f"Likely planted between {start_formatted} and {end_formatted}."
+                else:
+                    planting_window_text = "Unable to determine a clear planting window from the available data."
+                
+                print(f"Planting window estimate: {planting_window_text}")
+                
+            except Exception as e:
+                print(f"Error estimating planting window: {e}")
+                planting_window_text = "Error estimating planting window."
+        
         # Create special instruction for consistently high NDVI
         high_ndvi_instruction = ""
         if consistently_high_ndvi:
@@ -185,20 +352,22 @@ DO NOT attempt to estimate a planting date. Instead, clearly state that the crop
 before the beginning of the analysis period.
 """
         
-        # Create date formatting instruction
-        date_formatting_instruction = """
-IMPORTANT: When referring to dates, use natural, clear language:
-- Use phrases like "around April 15," "approximately mid-April," or "likely in early April"
-- For specific dates, use "on April 17" or similar phrasing
-- NEVER combine numeric dates with "around" (e.g., avoid phrases like "17 around April 15")
-- Keep date references consistent and unambiguous
+        # NEW: Create planting date instruction
+        planting_date_instruction = ""
+        if planting_window_text:
+            planting_date_instruction = f"""
+IMPORTANT: Based on crop-specific emergence windows and NDVI patterns, our system has determined:
+{planting_window_text}
+
+YOU MUST USE THIS EXACT PLANTING WINDOW STATEMENT in your response. 
+DO NOT modify it, rephrase it, or use different dates.
 """
         
-        # Construct prompt with enhanced information including tillage detection, NDVI change rates
+        # Construct prompt with enhanced information including tillage detection, NDVI change rates, and smart planting date
         prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, {'rainfall data, ' if irrigated == 'No' else ''}temperature patterns, GDD information, field location, and known crop properties.
 
 {high_ndvi_instruction}
-{date_formatting_instruction}
+{planting_date_instruction}
 
 🌾 Background
 Each analysis request includes:
@@ -236,7 +405,7 @@ Each analysis request includes:
 - Do not conclude that the field was already planted if a tillage-then-emergence pattern is detected.
 - Pay attention to NDVI change rate/slope to distinguish between rapid emergence, flat periods, or potential stress.
 - For irrigated fields, focus on NDVI patterns, temperature, and GDD rather than rainfall.
-- Always attempt to infer a planting date based on all available data, UNLESS NDVI values are consistently high throughout the period.
+- Always use the exact planting date statement provided above. Do not create your own planting date estimate.
 - If NDVI values remain consistently high throughout the period (all above 0.4), conclude that the crop was already established before the analysis period began.
 
 🧠 Your Analysis Must Include:
@@ -244,7 +413,7 @@ Each analysis request includes:
 2. Temperature & GDD Implications (if data available)
 3. {'Rainfall Response (rainfed crop triggers, dry periods)' if irrigated == 'No' else 'Irrigation & Crop Management Implications'}
 4. Crop Status Summary (bare soil, emergence, stress, maturity, potential replanting)
-5. Planting Date Inference - estimate based on NDVI patterns, {'rainfall, ' if irrigated == 'No' else ''}temperature and GDD
+5. Planting Date Statement - use EXACTLY the statement provided above
 6. Confidence Rating (High, Medium, Low)
 
 🧭 Examples of Language to Use:
@@ -252,14 +421,13 @@ Each analysis request includes:
 - "The NDVI drop from 0.6 to 0.2 followed by a rise suggests tillage and replanting occurred in mid-December."
 - "Rising temperatures and accumulated GDD of 120 indicate favorable conditions for emergence."
 - "NDVI shows a rapid increase rate of 0.05 per day after Jan 15, indicating vigorous early growth."
-- "NDVI increase after Dec 3 suggests planting occurred in late November."
 {'' if irrigated == 'Yes' else '- "Rainfall was insufficient to support rainfed planting."'}
 - "NDVI decline suggests senescence or water stress."
 - "Crop variety is unrecognized -- general vegetation analysis applied."
 - "NDVI values remained consistently high throughout the period, suggesting the crop was already established before the analysis period began."
 
 🧵 Output Format:
-Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Always include your estimated planting date if you can determine one, unless NDVI values indicate the crop was already established. Avoid referencing GPT, AI, or farmer-declared dates."""
+Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Always include the exact planting date statement provided above. Avoid referencing GPT, AI, or farmer-declared dates."""
 
         # Call OpenAI API
         try:
@@ -284,6 +452,11 @@ Respond in 2--4 sentences as a trained agronomist advising a field agent or insu
             elif "Low confidence" in insight or "Confidence: Low" in insight or "low confidence" in insight.lower():
                 confidence_level = "low"
             
+            # If we have planting date results from our algorithm, use that confidence
+            if planting_date_results and planting_date_results.get("confidence"):
+                confidence_level = planting_date_results["confidence"]
+                print(f"Using algorithm-determined confidence level: {confidence_level}")
+            
             # IMPROVED CONFIDENCE LOGIC: Boost confidence based on data quality
             if confidence_level != "high" and ndvi_data and len(ndvi_data) >= 10:
                 # Check if NDVI pattern is consistent
@@ -300,13 +473,29 @@ Respond in 2--4 sentences as a trained agronomist advising a field agent or insu
                 confidence_level = "high"
                 print("Set confidence to high for consistently high NDVI pattern (pre-established crop)")
             
-            return jsonify({
+            # Add planting date estimation results to the response
+            response_data = {
                 "success": True,
                 "insight": insight,
                 "confidence_level": confidence_level,
                 "tillage_detected": tillage_replanting_detected,
                 "consistently_high_ndvi": consistently_high_ndvi
-            })
+            }
+            
+            # Add planting date estimation if available
+            if planting_date_results:
+                response_data["planting_date_estimation"] = {
+                    "emergence_date": planting_date_results.get("emergenceDate"),
+                    "planting_window_start": planting_date_results.get("plantingWindowStart"),
+                    "planting_window_end": planting_date_results.get("plantingWindowEnd"),
+                    "rainfall_adjusted_planting": planting_date_results.get("rainfallAdjustedPlanting"),
+                    "pre_established": planting_date_results.get("preEstablished", False),
+                    "confidence": planting_date_results.get("confidence"),
+                    "message": planting_date_results.get("message"),
+                    "formatted_planting_window": planting_window_text
+                }
+            
+            return jsonify(response_data)
             
         except Exception as e:
             print(f"Insight generation error: {str(e)}")
