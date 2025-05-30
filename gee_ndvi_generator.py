@@ -6,7 +6,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
@@ -20,186 +19,6 @@ openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 @app.route("/")
 def index():
     return "NDVI & RGB backend is live!"
-
-def detect_planting_pattern(ndvi_data):
-    """
-    Analyzes NDVI time series to detect the weed → tillage → crop emergence pattern.
-    
-    This function looks for:
-    1. Initially high NDVI (weeds or previous vegetation)
-    2. Significant drop in NDVI (tillage or clearing)
-    3. Consistent rise in NDVI afterward (crop emergence)
-    
-    Returns:
-        dict: Contains detected pattern info, including:
-            - pattern_detected: Boolean indicating if pattern was found
-            - likely_planting_date: Estimated planting date if pattern was found
-            - confidence: High, medium, or low
-    """
-    if not ndvi_data or len(ndvi_data) < 4:
-        return {
-            "pattern_detected": False,
-            "likely_planting_date": None,
-            "confidence": "low",
-            "reason": "Insufficient data points"
-        }
-    
-    # Sort data by date
-    sorted_data = sorted(ndvi_data, key=lambda x: x["date"])
-    
-    # Debug log for NDVI values
-    ndvi_values_log = [f"{item['date']}: {item['ndvi']:.2f}" for item in sorted_data]
-    print(f"NDVI time series for pattern detection: {', '.join(ndvi_values_log)}")
-    
-    # Find significant drops in NDVI (potential tillage events)
-    potential_tillage = []
-    
-    for i in range(1, len(sorted_data)):
-        current = sorted_data[i]
-        previous = sorted_data[i-1]
-        
-        # Calculate the NDVI drop
-        ndvi_drop = previous["ndvi"] - current["ndvi"]
-        
-        # ADJUSTED: More permissive threshold for tillage detection
-        # Now detects drops where:
-        # 1. Previous NDVI was moderately high (could be weeds or other vegetation)
-        # 2. Current NDVI drops to levels indicating reduced vegetation
-        # 3. The drop is noticeable
-        if (previous["ndvi"] > 0.25 and 
-            current["ndvi"] < 0.25 and 
-            ndvi_drop > 0.1):
-            
-            potential_tillage.append({
-                "index": i,
-                "date": current["date"],
-                "ndvi_before": previous["ndvi"],
-                "ndvi_after": current["ndvi"],
-                "drop": ndvi_drop
-            })
-            print(f"Detected potential tillage: {previous['date']} ({previous['ndvi']:.2f}) → {current['date']} ({current['ndvi']:.2f}), drop: {ndvi_drop:.2f}")
-    
-    # If no potential tillage events found, return negative result
-    if not potential_tillage:
-        print("No significant NDVI drops detected that could indicate tillage")
-        return {
-            "pattern_detected": False,
-            "likely_planting_date": None,
-            "confidence": "low",
-            "reason": "No significant NDVI drops detected"
-        }
-    
-    # For each potential tillage event, check if NDVI rises consistently afterward
-    valid_patterns = []
-    
-    for event in potential_tillage:
-        tillage_index = event["index"]
-        tillage_date = event["date"]
-        
-        # Need at least 2 points after tillage to confirm rise
-        if tillage_index >= len(sorted_data) - 2:
-            continue
-        
-        # Check if NDVI rises consistently after this tillage event
-        consistent_rise = True
-        rise_points = []
-        
-        # ADJUSTED: Check if NDVI generally trends upward (allowing small fluctuations)
-        # This handles real-world data where NDVI might not rise perfectly consistently
-        start_ndvi = sorted_data[tillage_index]["ndvi"]
-        min_points_needed = min(4, len(sorted_data) - tillage_index - 1)
-        
-        for j in range(tillage_index, tillage_index + min_points_needed):
-            rise_points.append({
-                "date": sorted_data[j]["date"],
-                "ndvi": sorted_data[j]["ndvi"]
-            })
-        
-        # Check if there's a general upward trend, even if not perfectly consistent
-        if len(rise_points) >= 3:
-            # Compare first and last point to check for overall rise
-            first_ndvi = rise_points[0]["ndvi"]
-            last_ndvi = rise_points[-1]["ndvi"]
-            
-            # If there's an overall increase, consider it a valid rise
-            if last_ndvi > first_ndvi + 0.05:
-                # Calculate days between first and last measurement
-                days_between = (datetime.strptime(rise_points[-1]["date"], "%Y-%m-%d") - 
-                              datetime.strptime(rise_points[0]["date"], "%Y-%m-%d")).days
-                
-                if days_between <= 0:  # Avoid division by zero
-                    days_between = 1
-                    
-                rise_rate = (last_ndvi - first_ndvi) / days_between
-                
-                print(f"Detected NDVI rise after {tillage_date}: {first_ndvi:.2f} → {last_ndvi:.2f}, rate: {rise_rate:.4f}/day over {days_between} days")
-                
-                valid_patterns.append({
-                    "tillage_date": event["date"],
-                    "rise_points": rise_points,
-                    "rise_rate": rise_rate,
-                    "ndvi_after_tillage": first_ndvi,
-                    "ndvi_latest": last_ndvi
-                })
-    
-    # If no valid patterns found, return negative result
-    if not valid_patterns:
-        print("No consistent NDVI rise patterns found after potential tillage events")
-        return {
-            "pattern_detected": False,
-            "likely_planting_date": None,
-            "confidence": "low",
-            "reason": "No consistent NDVI rise after drops"
-        }
-    
-    # Sort valid patterns by rise rate (higher rise rate suggests crop emergence vs natural recovery)
-    valid_patterns.sort(key=lambda x: x["rise_rate"], reverse=True)
-    best_pattern = valid_patterns[0]
-    
-    # Estimate planting date (typically between tillage and first rise point)
-    tillage_date = datetime.strptime(best_pattern["tillage_date"], "%Y-%m-%d")
-    
-    # IMPROVED: More sophisticated planting date estimation
-    # If the tillage caused a very low NDVI (<0.15), likely planting happened very soon after
-    # Otherwise, may have been a partial tillage with planting following later
-    if best_pattern["ndvi_after_tillage"] < 0.15:
-        # Likely thorough tillage - planting probably 0-5 days after
-        planting_date = tillage_date + timedelta(days=2)  # Estimate 2 days after complete tillage
-        planting_confidence = "high"
-        planting_reason = "Clear tillage pattern with very low NDVI followed by consistent emergence"
-    else:
-        # Partial tillage or field preparation - planting might be 3-7 days after
-        planting_date = tillage_date + timedelta(days=5)  # Estimate 5 days after partial tillage
-        planting_confidence = "medium"
-        planting_reason = "Moderate tillage/clearing followed by emergence pattern"
-    
-    # Calculate rise days (emergence period)
-    rise_start_date = datetime.strptime(best_pattern["rise_points"][0]["date"], "%Y-%m-%d")
-    rise_end_date = datetime.strptime(best_pattern["rise_points"][-1]["date"], "%Y-%m-%d")
-    rise_days = (rise_end_date - rise_start_date).days
-    
-    # Boost confidence based on clear patterns
-    if best_pattern["rise_rate"] > 0.01 and best_pattern["ndvi_latest"] > best_pattern["ndvi_after_tillage"] + 0.15:
-        planting_confidence = "high"
-        planting_reason = "Strong emergence pattern with significant NDVI increase"
-    
-    print(f"Detected likely planting around {planting_date.strftime('%Y-%m-%d')} (Confidence: {planting_confidence})")
-    print(f"Reasoning: {planting_reason}")
-    
-    return {
-        "pattern_detected": True,
-        "likely_planting_date": planting_date.strftime("%Y-%m-%d"),
-        "confidence": planting_confidence,
-        "reason": planting_reason,
-        "tillage_date": best_pattern["tillage_date"],
-        "rise_rate": best_pattern["rise_rate"],
-        "pattern_details": {
-            "tillage_date": best_pattern["tillage_date"],
-            "ndvi_before_tillage": best_pattern["rise_points"][0]["ndvi"],
-            "ndvi_latest": best_pattern["ndvi_latest"],
-            "rise_days": rise_days
-        }
-    }
 
 @app.route("/api/agronomic_insight", methods=["POST"])
 def generate_agronomic_report():
@@ -223,43 +42,6 @@ def generate_agronomic_report():
         gdd_stats = data.get("gdd_stats", {})
         temperature_summary = data.get("temperature_summary", {})
         base_temperature = data.get("base_temperature", 10)
-        
-        print(f"Processing field: {field_name}, crop: {crop}, NDVI data points: {len(ndvi_data)}")
-        
-        # NEW: Detect the weed → tillage → crop emergence pattern
-        planting_pattern = detect_planting_pattern(ndvi_data)
-        smart_planting_date = None
-        planting_pattern_detected = False
-        planting_message = "No planting date identified. A crop was already fully established throughout the selected period."
-        
-        # Use detected planting date if pattern was found
-        if planting_pattern["pattern_detected"]:
-            smart_planting_date = planting_pattern["likely_planting_date"]
-            planting_pattern_detected = True
-            planting_confidence = planting_pattern["confidence"]
-            planting_reason = planting_pattern["reason"]
-            
-            # NEW: Update the planting message
-            tillage_date = planting_pattern["tillage_date"]
-            planting_message = f"Estimated planting date: {smart_planting_date} (Confidence: {planting_confidence.capitalize()}). Detected tillage around {tillage_date} followed by crop emergence pattern."
-            
-            print(f"Detected planting pattern! Likely planting date: {smart_planting_date}, Confidence: {planting_pattern['confidence']}")
-        else:
-            print(f"No planting pattern detected. Reason: {planting_pattern.get('reason', 'Unknown')}")
-        
-        # Determine which planting date to use, prioritize detected pattern if confidence is high
-        if smart_planting_date and planting_pattern["confidence"] != "low":
-            if not estimated_planting_date:
-                # No existing estimate, use detected date
-                estimated_planting_date = smart_planting_date
-                print(f"Using detected planting date: {estimated_planting_date}")
-            elif planting_pattern["confidence"] == "high":
-                # Overwrite existing estimate if detection confidence is high
-                print(f"Overwriting existing planting date {estimated_planting_date} with high-confidence detection: {smart_planting_date}")
-                estimated_planting_date = smart_planting_date
-            else:
-                # Both estimates exist, keep both for reference in the prompt
-                print(f"Keeping both estimates: original {estimated_planting_date} and detected {smart_planting_date}")
         
         # Calculate average cloud cover if available
         avg_cloud_cover = None
@@ -302,8 +84,8 @@ def generate_agronomic_report():
         if gdd_stats:
             gdd_formatted = f"Cumulative GDD: {gdd_stats.get('total_gdd', 'N/A')}, Avg daily GDD: {gdd_stats.get('avg_daily_gdd', 'N/A')}, Base temp: {base_temperature}°C"
         
-        # Construct base prompt
-        base_prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, rainfall data, temperature patterns, GDD information, field location, and known crop properties.
+        # Construct prompt with enhanced information including temperature and GDD
+        prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, rainfall data, temperature patterns, GDD information, field location, and known crop properties.
 
 🌾 Background
 Each analysis request includes:
@@ -315,38 +97,8 @@ Each analysis request includes:
 - Rainfall Time Series: {rainfall_formatted}
 - Temperature Data: {temp_formatted}
 - Growing Degree Days: {gdd_formatted}
-- Analysis Date Range: {date_range}"""
+- Analysis Date Range: {date_range}
 
-        # Add planting date information to prompt, including pattern detection if found
-        planting_date_section = """
-🌱 Planting Date Information:"""
-
-        if planting_pattern_detected:
-            planting_date_section += f"""
-- IMPORTANT: System detected a tillage → planting → emergence pattern in the NDVI data!
-- Detected pattern: Initially higher NDVI → Drop (tillage on {planting_pattern["tillage_date"]}) → Consistent rise (crop emergence)
-- AI-estimated planting date: {smart_planting_date} (Confidence: {planting_pattern["confidence"]})
-- Pattern details: {planting_pattern["reason"]}"""
-            
-            if estimated_planting_date and estimated_planting_date != smart_planting_date:
-                planting_date_section += f"""
-- Previously estimated planting date: {estimated_planting_date}
-- You should favor the AI-detected planting date since it accounts for the tillage pattern."""
-            else:
-                planting_date_section += """
-- Use this detected planting date as your reference point for growth stage estimation."""
-        else:
-            if estimated_planting_date:
-                planting_date_section += f"""
-- Estimated planting date: {estimated_planting_date}
-- No clear tillage → planting → emergence pattern was detected in the NDVI data."""
-            else:
-                planting_date_section += """
-- No planting date information available
-- Please infer planting date from NDVI trends, rainfall patterns, and temperature data."""
-
-        # Add the agronomic intelligence section
-        agronomic_section = """
 🎓 Agronomic Intelligence to Assume:
 - **Maize (e.g. SC727):**
   - Rainfed planting window: Nov--Jan (Zimbabwe)
@@ -362,24 +114,8 @@ Each analysis request includes:
   - Winter wheat planted May--Jun (irrigated)
   - Spring wheat typically Nov--Dec (rainfed)
   - GDD for emergence: 80-100, heading: 400-500, maturity: 800-900
-- **Barley:**
-  - Similar to wheat but slightly shorter growing season
-  - GDD for emergence: 80-100, heading: 350-450, maturity: 750-850
-- If crop/variety is unknown or labeled 'testing', use general NDVI + rainfall pattern logic and suggest entering known values for deeper insights."""
+- If crop/variety is unknown or labeled 'testing', use general NDVI + rainfall pattern logic and suggest entering known values for deeper insights.
 
-        # Add pattern detection guidance if relevant
-        pattern_guidance = ""
-        if planting_pattern_detected:
-            pattern_guidance = """
-🔍 NDVI Pattern Recognition:
-- The system detected a clear tillage → planting → crop emergence pattern in this field.
-- This is common in real agricultural fields and can help pinpoint actual planting date.
-- High initial NDVI does NOT always indicate early crop establishment; it may represent weeds or previous vegetation.
-- Sharp drops in NDVI often indicate tillage operations, with planting shortly after.
-- Focus on the consistent rise in NDVI AFTER the detected tillage date."""
-
-        # Complete the prompt
-        analysis_section = """
 🧠 Your Analysis Must Include:
 1. NDVI Pattern Interpretation (flat, rising, declining)
 2. Temperature & GDD Implications (if data available)
@@ -398,15 +134,6 @@ Each analysis request includes:
 
 🧵 Output Format:
 Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Avoid referencing GPT, AI, or farmer-declared dates."""
-
-        # Combine all prompt sections
-        prompt = base_prompt + planting_date_section + agronomic_section
-        
-        # Add pattern guidance only if pattern was detected
-        if pattern_guidance:
-            prompt += pattern_guidance
-            
-        prompt += analysis_section
 
         # Call OpenAI API
         try:
@@ -442,29 +169,11 @@ Respond in 2--4 sentences as a trained agronomist advising a field agent or insu
                     confidence_level = "high"
                     print(f"Boosted confidence to high based on data quality: {len(ndvi_data)} observations, {avg_cloud_cover:.1f}% cloud cover")
             
-            # Include planting pattern detection results in response
-            response_data = {
+            return jsonify({
                 "success": True,
                 "insight": insight,
                 "confidence_level": confidence_level
-            }
-            
-            # Add planting pattern information if detected
-            if planting_pattern_detected:
-                response_data["planting_pattern"] = {
-                    "detected": True,
-                    "likely_planting_date": smart_planting_date,
-                    "confidence": planting_pattern["confidence"],
-                    "tillage_date": planting_pattern["tillage_date"],
-                    "planting_message": planting_message  # NEW: Include formatted message for frontend
-                }
-            else:
-                response_data["planting_pattern"] = {
-                    "detected": False,
-                    "planting_message": planting_message  # NEW: Include default message
-                }
-            
-            return jsonify(response_data)
+            })
             
         except Exception as e:
             print(f"Insight generation error: {str(e)}")
