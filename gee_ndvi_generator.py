@@ -129,11 +129,24 @@ def generate_agronomic_report():
                     for c in top_changes
                 ])
         
+        # Check for consistently high NDVI values
+        consistently_high_ndvi = False
+        if ndvi_data:
+            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+            ndvi_values = [item['ndvi'] for item in sorted_ndvi]
+            # Consider consistently high if all values are above 0.4
+            if all(val > 0.4 for val in ndvi_values):
+                consistently_high_ndvi = True
+                high_ndvi_min = min(ndvi_values)
+                high_ndvi_max = max(ndvi_values)
+                high_ndvi_avg = sum(ndvi_values) / len(ndvi_values)
+                print(f"Detected consistently high NDVI: min={high_ndvi_min:.2f}, max={high_ndvi_max:.2f}, avg={high_ndvi_avg:.2f}")
+        
         # Analyze NDVI patterns to detect possible tillage/replanting scenarios
         tillage_replanting_detected = False
         tillage_info = "No tillage or replanting pattern detected"
         
-        if len(ndvi_data) >= 3:
+        if len(ndvi_data) >= 3 and not consistently_high_ndvi:
             sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
             # Look for high -> low -> high pattern
             max_drop = 0
@@ -162,8 +175,30 @@ def generate_agronomic_report():
                                    f"to {sorted_ndvi[drop_end_idx]['ndvi']:.2f} around {sorted_ndvi[drop_end_idx]['date']}, "
                                    f"then rose again afterward")
         
+        # Create special instruction for consistently high NDVI
+        high_ndvi_instruction = ""
+        if consistently_high_ndvi:
+            high_ndvi_instruction = """
+IMPORTANT: The NDVI data shows consistently high values (>0.4) throughout the entire analysis period. 
+This indicates the crop was already well-established before the analysis period began.
+DO NOT attempt to estimate a planting date. Instead, clearly state that the crop was already established
+before the beginning of the analysis period.
+"""
+        
+        # Create date formatting instruction
+        date_formatting_instruction = """
+IMPORTANT: When referring to dates, use natural, clear language:
+- Use phrases like "around April 15," "approximately mid-April," or "likely in early April"
+- For specific dates, use "on April 17" or similar phrasing
+- NEVER combine numeric dates with "around" (e.g., avoid phrases like "17 around April 15")
+- Keep date references consistent and unambiguous
+"""
+        
         # Construct prompt with enhanced information including tillage detection, NDVI change rates
         prompt = f"""You are an intelligent agronomic assistant embedded inside the Yieldera platform. Your task is to generate insightful crop development commentary based on NDVI trends, {'rainfall data, ' if irrigated == 'No' else ''}temperature patterns, GDD information, field location, and known crop properties.
+
+{high_ndvi_instruction}
+{date_formatting_instruction}
 
 🌾 Background
 Each analysis request includes:
@@ -201,7 +236,8 @@ Each analysis request includes:
 - Do not conclude that the field was already planted if a tillage-then-emergence pattern is detected.
 - Pay attention to NDVI change rate/slope to distinguish between rapid emergence, flat periods, or potential stress.
 - For irrigated fields, focus on NDVI patterns, temperature, and GDD rather than rainfall.
-- Always attempt to infer a planting date based on all available data.
+- Always attempt to infer a planting date based on all available data, UNLESS NDVI values are consistently high throughout the period.
+- If NDVI values remain consistently high throughout the period (all above 0.4), conclude that the crop was already established before the analysis period began.
 
 🧠 Your Analysis Must Include:
 1. NDVI Pattern Interpretation (flat, rising, declining, or mixed patterns including tillage events)
@@ -216,13 +252,14 @@ Each analysis request includes:
 - "The NDVI drop from 0.6 to 0.2 followed by a rise suggests tillage and replanting occurred in mid-December."
 - "Rising temperatures and accumulated GDD of 120 indicate favorable conditions for emergence."
 - "NDVI shows a rapid increase rate of 0.05 per day after Jan 15, indicating vigorous early growth."
-- "NDVI increase after Dec 3 suggests planting occurred in late Nov."
+- "NDVI increase after Dec 3 suggests planting occurred in late November."
 {'' if irrigated == 'Yes' else '- "Rainfall was insufficient to support rainfed planting."'}
 - "NDVI decline suggests senescence or water stress."
 - "Crop variety is unrecognized -- general vegetation analysis applied."
+- "NDVI values remained consistently high throughout the period, suggesting the crop was already established before the analysis period began."
 
 🧵 Output Format:
-Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Always include your estimated planting date if you can determine one. Avoid referencing GPT, AI, or farmer-declared dates."""
+Respond in 2--4 sentences as a trained agronomist advising a field agent or insurer. Always include your estimated planting date if you can determine one, unless NDVI values indicate the crop was already established. Avoid referencing GPT, AI, or farmer-declared dates."""
 
         # Call OpenAI API
         try:
@@ -258,11 +295,17 @@ Respond in 2--4 sentences as a trained agronomist advising a field agent or insu
                     confidence_level = "high"
                     print(f"Boosted confidence to high based on data quality: {len(ndvi_data)} observations, {avg_cloud_cover:.1f}% cloud cover")
             
+            # If we detected consistently high NDVI, set confidence high since we're confident crop was pre-established
+            if consistently_high_ndvi:
+                confidence_level = "high"
+                print("Set confidence to high for consistently high NDVI pattern (pre-established crop)")
+            
             return jsonify({
                 "success": True,
                 "insight": insight,
                 "confidence_level": confidence_level,
-                "tillage_detected": tillage_replanting_detected
+                "tillage_detected": tillage_replanting_detected,
+                "consistently_high_ndvi": consistently_high_ndvi
             })
             
         except Exception as e:
