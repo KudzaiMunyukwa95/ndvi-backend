@@ -26,8 +26,8 @@ def detect_planting_pattern(ndvi_data):
     Analyzes NDVI time series to detect the weed → tillage → crop emergence pattern.
     
     This function looks for:
-    1. Initially high NDVI (weeds)
-    2. Significant drop in NDVI (tillage)
+    1. Initially high NDVI (weeds or previous vegetation)
+    2. Significant drop in NDVI (tillage or clearing)
     3. Consistent rise in NDVI afterward (crop emergence)
     
     Returns:
@@ -47,6 +47,10 @@ def detect_planting_pattern(ndvi_data):
     # Sort data by date
     sorted_data = sorted(ndvi_data, key=lambda x: x["date"])
     
+    # Debug log for NDVI values
+    ndvi_values_log = [f"{item['date']}: {item['ndvi']:.2f}" for item in sorted_data]
+    print(f"NDVI time series for pattern detection: {', '.join(ndvi_values_log)}")
+    
     # Find significant drops in NDVI (potential tillage events)
     potential_tillage = []
     
@@ -57,13 +61,14 @@ def detect_planting_pattern(ndvi_data):
         # Calculate the NDVI drop
         ndvi_drop = previous["ndvi"] - current["ndvi"]
         
-        # Consider it a potential tillage if:
-        # 1. Previous NDVI was relatively high (weeds)
-        # 2. Current NDVI is low (bare soil)
-        # 3. The drop is significant
-        if (previous["ndvi"] > 0.3 and 
-            current["ndvi"] < 0.2 and 
-            ndvi_drop > 0.15):
+        # ADJUSTED: More permissive threshold for tillage detection
+        # Now detects drops where:
+        # 1. Previous NDVI was moderately high (could be weeds or other vegetation)
+        # 2. Current NDVI drops to levels indicating reduced vegetation
+        # 3. The drop is noticeable
+        if (previous["ndvi"] > 0.25 and 
+            current["ndvi"] < 0.25 and 
+            ndvi_drop > 0.1):
             
             potential_tillage.append({
                 "index": i,
@@ -72,9 +77,11 @@ def detect_planting_pattern(ndvi_data):
                 "ndvi_after": current["ndvi"],
                 "drop": ndvi_drop
             })
+            print(f"Detected potential tillage: {previous['date']} ({previous['ndvi']:.2f}) → {current['date']} ({current['ndvi']:.2f}), drop: {ndvi_drop:.2f}")
     
     # If no potential tillage events found, return negative result
     if not potential_tillage:
+        print("No significant NDVI drops detected that could indicate tillage")
         return {
             "pattern_detected": False,
             "likely_planting_date": None,
@@ -87,6 +94,7 @@ def detect_planting_pattern(ndvi_data):
     
     for event in potential_tillage:
         tillage_index = event["index"]
+        tillage_date = event["date"]
         
         # Need at least 2 points after tillage to confirm rise
         if tillage_index >= len(sorted_data) - 2:
@@ -96,43 +104,47 @@ def detect_planting_pattern(ndvi_data):
         consistent_rise = True
         rise_points = []
         
-        for j in range(tillage_index, min(tillage_index + 4, len(sorted_data) - 1)):
-            current = sorted_data[j]
-            next_point = sorted_data[j+1]
-            
-            # If NDVI drops again or stays very low, it's not a consistent rise
-            if next_point["ndvi"] <= current["ndvi"] or next_point["ndvi"] < 0.15:
-                consistent_rise = False
-                break
-            
+        # ADJUSTED: Check if NDVI generally trends upward (allowing small fluctuations)
+        # This handles real-world data where NDVI might not rise perfectly consistently
+        start_ndvi = sorted_data[tillage_index]["ndvi"]
+        min_points_needed = min(4, len(sorted_data) - tillage_index - 1)
+        
+        for j in range(tillage_index, tillage_index + min_points_needed):
             rise_points.append({
-                "date": next_point["date"],
-                "ndvi": next_point["ndvi"]
+                "date": sorted_data[j]["date"],
+                "ndvi": sorted_data[j]["ndvi"]
             })
         
-        # If we have a consistent rise and at least 2 rising points, consider this a valid pattern
-        if consistent_rise and len(rise_points) >= 2:
-            # Calculate rise rate to differentiate between natural vegetation recovery and crop emergence
-            first_rise = rise_points[0]["ndvi"]
-            last_rise = rise_points[-1]["ndvi"]
-            days_between = (datetime.strptime(rise_points[-1]["date"], "%Y-%m-%d") - 
-                           datetime.strptime(rise_points[0]["date"], "%Y-%m-%d")).days
+        # Check if there's a general upward trend, even if not perfectly consistent
+        if len(rise_points) >= 3:
+            # Compare first and last point to check for overall rise
+            first_ndvi = rise_points[0]["ndvi"]
+            last_ndvi = rise_points[-1]["ndvi"]
             
-            if days_between <= 0:  # Avoid division by zero
-                days_between = 1
+            # If there's an overall increase, consider it a valid rise
+            if last_ndvi > first_ndvi + 0.05:
+                # Calculate days between first and last measurement
+                days_between = (datetime.strptime(rise_points[-1]["date"], "%Y-%m-%d") - 
+                              datetime.strptime(rise_points[0]["date"], "%Y-%m-%d")).days
                 
-            rise_rate = (last_rise - first_rise) / days_between
-            
-            # Crop emergence typically shows a faster, more consistent rise than natural recovery
-            if rise_rate > 0.01:  # Arbitrary threshold, may need adjustment
+                if days_between <= 0:  # Avoid division by zero
+                    days_between = 1
+                    
+                rise_rate = (last_ndvi - first_ndvi) / days_between
+                
+                print(f"Detected NDVI rise after {tillage_date}: {first_ndvi:.2f} → {last_ndvi:.2f}, rate: {rise_rate:.4f}/day over {days_between} days")
+                
                 valid_patterns.append({
                     "tillage_date": event["date"],
                     "rise_points": rise_points,
-                    "rise_rate": rise_rate
+                    "rise_rate": rise_rate,
+                    "ndvi_after_tillage": first_ndvi,
+                    "ndvi_latest": last_ndvi
                 })
     
     # If no valid patterns found, return negative result
     if not valid_patterns:
+        print("No consistent NDVI rise patterns found after potential tillage events")
         return {
             "pattern_detected": False,
             "likely_planting_date": None,
@@ -146,38 +158,46 @@ def detect_planting_pattern(ndvi_data):
     
     # Estimate planting date (typically between tillage and first rise point)
     tillage_date = datetime.strptime(best_pattern["tillage_date"], "%Y-%m-%d")
-    first_rise_date = datetime.strptime(best_pattern["rise_points"][0]["date"], "%Y-%m-%d")
     
-    # Planting typically happens right after tillage, or a short time before first detected rise
-    days_diff = (first_rise_date - tillage_date).days
-    
-    if days_diff <= 7:
-        # If time between tillage and first rise is short, likely planted right after tillage
-        planting_date = tillage_date + timedelta(days=1)  # Day after tillage
-        confidence = "medium"
+    # IMPROVED: More sophisticated planting date estimation
+    # If the tillage caused a very low NDVI (<0.15), likely planting happened very soon after
+    # Otherwise, may have been a partial tillage with planting following later
+    if best_pattern["ndvi_after_tillage"] < 0.15:
+        # Likely thorough tillage - planting probably 0-5 days after
+        planting_date = tillage_date + timedelta(days=2)  # Estimate 2 days after complete tillage
+        planting_confidence = "high"
+        planting_reason = "Clear tillage pattern with very low NDVI followed by consistent emergence"
     else:
-        # If longer gap, estimate planting about 7-10 days before first rise (typical emergence time)
-        planting_date = first_rise_date - timedelta(days=7)  # ~7 days before first rise
-        confidence = "medium"
+        # Partial tillage or field preparation - planting might be 3-7 days after
+        planting_date = tillage_date + timedelta(days=5)  # Estimate 5 days after partial tillage
+        planting_confidence = "medium"
+        planting_reason = "Moderate tillage/clearing followed by emergence pattern"
     
-    # Make sure estimated planting date isn't before tillage
-    if planting_date < tillage_date:
-        planting_date = tillage_date + timedelta(days=1)
+    # Calculate rise days (emergence period)
+    rise_start_date = datetime.strptime(best_pattern["rise_points"][0]["date"], "%Y-%m-%d")
+    rise_end_date = datetime.strptime(best_pattern["rise_points"][-1]["date"], "%Y-%m-%d")
+    rise_days = (rise_end_date - rise_start_date).days
     
-    # Adjust confidence based on rise rate and pattern clarity
-    if best_pattern["rise_rate"] > 0.015 and days_diff < 20:
-        confidence = "high"
+    # Boost confidence based on clear patterns
+    if best_pattern["rise_rate"] > 0.01 and best_pattern["ndvi_latest"] > best_pattern["ndvi_after_tillage"] + 0.15:
+        planting_confidence = "high"
+        planting_reason = "Strong emergence pattern with significant NDVI increase"
+    
+    print(f"Detected likely planting around {planting_date.strftime('%Y-%m-%d')} (Confidence: {planting_confidence})")
+    print(f"Reasoning: {planting_reason}")
     
     return {
         "pattern_detected": True,
         "likely_planting_date": planting_date.strftime("%Y-%m-%d"),
-        "confidence": confidence,
+        "confidence": planting_confidence,
+        "reason": planting_reason,
         "tillage_date": best_pattern["tillage_date"],
         "rise_rate": best_pattern["rise_rate"],
         "pattern_details": {
             "tillage_date": best_pattern["tillage_date"],
-            "first_rise_date": best_pattern["rise_points"][0]["date"],
-            "days_between": days_diff
+            "ndvi_before_tillage": best_pattern["rise_points"][0]["ndvi"],
+            "ndvi_latest": best_pattern["ndvi_latest"],
+            "rise_days": rise_days
         }
     }
 
@@ -204,16 +224,28 @@ def generate_agronomic_report():
         temperature_summary = data.get("temperature_summary", {})
         base_temperature = data.get("base_temperature", 10)
         
+        print(f"Processing field: {field_name}, crop: {crop}, NDVI data points: {len(ndvi_data)}")
+        
         # NEW: Detect the weed → tillage → crop emergence pattern
         planting_pattern = detect_planting_pattern(ndvi_data)
         smart_planting_date = None
         planting_pattern_detected = False
+        planting_message = "No planting date identified. A crop was already fully established throughout the selected period."
         
         # Use detected planting date if pattern was found
         if planting_pattern["pattern_detected"]:
             smart_planting_date = planting_pattern["likely_planting_date"]
             planting_pattern_detected = True
+            planting_confidence = planting_pattern["confidence"]
+            planting_reason = planting_pattern["reason"]
+            
+            # NEW: Update the planting message
+            tillage_date = planting_pattern["tillage_date"]
+            planting_message = f"Estimated planting date: {smart_planting_date} (Confidence: {planting_confidence.capitalize()}). Detected tillage around {tillage_date} followed by crop emergence pattern."
+            
             print(f"Detected planting pattern! Likely planting date: {smart_planting_date}, Confidence: {planting_pattern['confidence']}")
+        else:
+            print(f"No planting pattern detected. Reason: {planting_pattern.get('reason', 'Unknown')}")
         
         # Determine which planting date to use, prioritize detected pattern if confidence is high
         if smart_planting_date and planting_pattern["confidence"] != "low":
@@ -292,8 +324,9 @@ Each analysis request includes:
         if planting_pattern_detected:
             planting_date_section += f"""
 - IMPORTANT: System detected a tillage → planting → emergence pattern in the NDVI data!
-- Detected pattern: Initially high NDVI (weeds) → Sharp drop (tillage on {planting_pattern["tillage_date"]}) → Consistent rise (crop emergence)
-- AI-estimated planting date: {smart_planting_date} (Confidence: {planting_pattern["confidence"]})"""
+- Detected pattern: Initially higher NDVI → Drop (tillage on {planting_pattern["tillage_date"]}) → Consistent rise (crop emergence)
+- AI-estimated planting date: {smart_planting_date} (Confidence: {planting_pattern["confidence"]})
+- Pattern details: {planting_pattern["reason"]}"""
             
             if estimated_planting_date and estimated_planting_date != smart_planting_date:
                 planting_date_section += f"""
@@ -329,6 +362,9 @@ Each analysis request includes:
   - Winter wheat planted May--Jun (irrigated)
   - Spring wheat typically Nov--Dec (rainfed)
   - GDD for emergence: 80-100, heading: 400-500, maturity: 800-900
+- **Barley:**
+  - Similar to wheat but slightly shorter growing season
+  - GDD for emergence: 80-100, heading: 350-450, maturity: 750-850
 - If crop/variety is unknown or labeled 'testing', use general NDVI + rainfall pattern logic and suggest entering known values for deeper insights."""
 
         # Add pattern detection guidance if relevant
@@ -336,9 +372,9 @@ Each analysis request includes:
         if planting_pattern_detected:
             pattern_guidance = """
 🔍 NDVI Pattern Recognition:
-- The system detected a clear weed → tillage → crop emergence pattern in this field.
+- The system detected a clear tillage → planting → crop emergence pattern in this field.
 - This is common in real agricultural fields and can help pinpoint actual planting date.
-- High initial NDVI does NOT always indicate early crop establishment; it may represent weeds.
+- High initial NDVI does NOT always indicate early crop establishment; it may represent weeds or previous vegetation.
 - Sharp drops in NDVI often indicate tillage operations, with planting shortly after.
 - Focus on the consistent rise in NDVI AFTER the detected tillage date."""
 
@@ -419,7 +455,13 @@ Respond in 2--4 sentences as a trained agronomist advising a field agent or insu
                     "detected": True,
                     "likely_planting_date": smart_planting_date,
                     "confidence": planting_pattern["confidence"],
-                    "tillage_date": planting_pattern["tillage_date"]
+                    "tillage_date": planting_pattern["tillage_date"],
+                    "planting_message": planting_message  # NEW: Include formatted message for frontend
+                }
+            else:
+                response_data["planting_pattern"] = {
+                    "detected": False,
+                    "planting_message": planting_message  # NEW: Include default message
                 }
             
             return jsonify(response_data)
