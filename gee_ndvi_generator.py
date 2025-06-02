@@ -300,7 +300,7 @@ def detect_emergence_and_estimate_planting(ndvi_data, crop_type, irrigated, rain
             break
     
     # If no emergence detected, check if all values are above threshold (pre-established crop)
-    if not emergence_date and sorted_ndvi and sorted_ndvi[0]['ndvi'] >= EMERGENCE_THRESHOLD: # Check if sorted_ndvi is not empty
+    if not emergence_date and sorted_ndvi[0]['ndvi'] >= EMERGENCE_THRESHOLD:
         return {
             "emergenceDate": None,
             "plantingWindowStart": None,
@@ -480,21 +480,21 @@ def generate_agronomic_report():
         ndvi_change_rates = []
         if len(ndvi_data) > 1:
             # Sort data by date
-            sorted_ndvi_for_change = sorted(ndvi_data, key=lambda x: x['date']) # Renamed to avoid conflict
+            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
             
             # Calculate change rates
-            for i in range(1, len(sorted_ndvi_for_change)):
+            for i in range(1, len(sorted_ndvi)):
                 try:
-                    date1 = datetime.strptime(sorted_ndvi_for_change[i-1]['date'], '%Y-%m-%d')
-                    date2 = datetime.strptime(sorted_ndvi_for_change[i]['date'], '%Y-%m-%d')
+                    date1 = datetime.strptime(sorted_ndvi[i-1]['date'], '%Y-%m-%d')
+                    date2 = datetime.strptime(sorted_ndvi[i]['date'], '%Y-%m-%d')
                     days_diff = (date2 - date1).days
                     
                     if days_diff > 0:  # Avoid division by zero
-                        ndvi_diff = sorted_ndvi_for_change[i]['ndvi'] - sorted_ndvi_for_change[i-1]['ndvi']
+                        ndvi_diff = sorted_ndvi[i]['ndvi'] - sorted_ndvi[i-1]['ndvi']
                         change_rate = ndvi_diff / days_diff
                         ndvi_change_rates.append({
-                            'start_date': sorted_ndvi_for_change[i-1]['date'],
-                            'end_date': sorted_ndvi_for_change[i]['date'],
+                            'start_date': sorted_ndvi[i-1]['date'],
+                            'end_date': sorted_ndvi[i]['date'],
                             'days': days_diff,
                             'change_rate': change_rate,
                             'total_change': ndvi_diff
@@ -527,39 +527,39 @@ def generate_agronomic_report():
         drop_end_idx = -1
         
         if len(ndvi_data) >= 3:
-            sorted_ndvi_for_tillage = sorted(ndvi_data, key=lambda x: x['date']) # Renamed
+            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
             # Look for high -> low -> high pattern
             max_drop = 0
             
-            for i in range(1, len(sorted_ndvi_for_tillage)):
-                current_drop = sorted_ndvi_for_tillage[i-1]['ndvi'] - sorted_ndvi_for_tillage[i]['ndvi']
-                if current_drop > max_drop and current_drop > 0.15 and sorted_ndvi_for_tillage[i-1]['ndvi'] > 0.3:
+            for i in range(1, len(sorted_ndvi)):
+                current_drop = sorted_ndvi[i-1]['ndvi'] - sorted_ndvi[i]['ndvi']
+                if current_drop > max_drop and current_drop > 0.15 and sorted_ndvi[i-1]['ndvi'] > 0.3:
                     max_drop = current_drop
                     drop_start_idx = i-1
                     drop_end_idx = i
             
             # If we found a significant drop, check if NDVI rises again afterward
-            if drop_start_idx >= 0 and drop_end_idx < len(sorted_ndvi_for_tillage) - 1:
+            if drop_start_idx >= 0 and drop_end_idx < len(sorted_ndvi) - 1:
                 # Look for subsequent rise
                 subsequent_rise = False
-                for i in range(drop_end_idx + 1, len(sorted_ndvi_for_tillage)):
-                    if sorted_ndvi_for_tillage[i]['ndvi'] > sorted_ndvi_for_tillage[drop_end_idx]['ndvi'] + 0.1:
+                for i in range(drop_end_idx + 1, len(sorted_ndvi)):
+                    if sorted_ndvi[i]['ndvi'] > sorted_ndvi[drop_end_idx]['ndvi'] + 0.1:
                         subsequent_rise = True
                         break
                 
                 if subsequent_rise:
                     tillage_replanting_detected = True
-                    tillage_date = sorted_ndvi_for_tillage[drop_end_idx]['date']
-                    tillage_info = (f"Potential tillage/replanting detected: NDVI dropped from {sorted_ndvi_for_tillage[drop_start_idx]['ndvi']:.2f} "
-                                   f"to {sorted_ndvi_for_tillage[drop_end_idx]['ndvi']:.2f} around {sorted_ndvi_for_tillage[drop_end_idx]['date']}, "
+                    tillage_date = sorted_ndvi[drop_end_idx]['date']
+                    tillage_info = (f"Potential tillage/replanting detected: NDVI dropped from {sorted_ndvi[drop_start_idx]['ndvi']:.2f} "
+                                   f"to {sorted_ndvi[drop_end_idx]['ndvi']:.2f} around {sorted_ndvi[drop_end_idx]['date']}, "
                                    f"then rose again afterward")
                     print(f"Tillage/replanting detected on {tillage_date}")
         
         # Check for consistently high NDVI values - ONLY if no tillage/replanting pattern detected
         consistently_high_ndvi = False
         if ndvi_data and not tillage_replanting_detected:
-            sorted_ndvi_for_high = sorted(ndvi_data, key=lambda x: x['date']) # Renamed
-            ndvi_values = [item['ndvi'] for item in sorted_ndvi_for_high]
+            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+            ndvi_values = [item['ndvi'] for item in sorted_ndvi]
             # Consider consistently high if all values are above 0.4
             if all(val > 0.4 for val in ndvi_values):
                 consistently_high_ndvi = True
@@ -614,8 +614,8 @@ def generate_agronomic_report():
                     
                     # Use rainfall-adjusted date if available for rainfed fields
                     if irrigated == "No" and planting_date_results["rainfallAdjustedPlanting"]:
-                        rainfall_date_display = format_date_for_display(planting_date_results["rainfallAdjustedPlanting"]) # Renamed
-                        planting_window_text = f"Likely planted between {start_formatted} and {end_formatted}, with rainfall data suggesting planting occurred around {rainfall_date_display}."
+                        rainfall_date = format_date_for_display(planting_date_results["rainfallAdjustedPlanting"])
+                        planting_window_text = f"Likely planted between {start_formatted} and {end_formatted}, with rainfall data suggesting planting occurred around {rainfall_date}."
                     else:
                         planting_window_text = f"Likely planted between {start_formatted} and {end_formatted}."
                 else:
@@ -639,7 +639,7 @@ before the beginning of the analysis period.
         
         # Create special instruction for tillage/replanting
         tillage_instruction = ""
-        if tillage_replanting_detected and tillage_date: # Added tillage_date check
+        if tillage_replanting_detected:
             tillage_instruction = f"""
 IMPORTANT: The NDVI data shows a clear tillage or replanting pattern with initial high values 
 followed by a sharp decline around {format_date_for_display(tillage_date)} and then a steady rise afterward.
@@ -761,8 +761,8 @@ Respond in 2--3 sentences as a trained agronomist advising a field agent or insu
             # IMPROVED CONFIDENCE LOGIC: Boost confidence based on data quality
             if confidence_level != "high" and ndvi_data and len(ndvi_data) >= 10:
                 # Check if NDVI pattern is consistent
-                ndvi_values_for_std_dev = [item["ndvi"] for item in ndvi_data] # Renamed
-                ndvi_std_dev = calculate_std_dev(ndvi_values_for_std_dev)
+                ndvi_values = [item["ndvi"] for item in ndvi_data]
+                ndvi_std_dev = calculate_std_dev(ndvi_values)
                 
                 # If we have low cloud cover and consistent NDVI pattern, boost confidence
                 if avg_cloud_cover is not None and avg_cloud_cover < 20 and ndvi_std_dev < 0.15:
@@ -800,7 +800,7 @@ Respond in 2--3 sentences as a trained agronomist advising a field agent or insu
                     "message": planting_date_results.get("message"),
                     "formatted_planting_window": planting_window_text,
                     "rainfall_without_emergence": planting_date_results.get("rainfall_without_emergence", False),
-                    "tillage_replanting_detected": tillage_replanting_detected, # Ensure this is correctly passed
+                    "tillage_replanting_detected": tillage_replanting_detected,
                     "tillage_date": tillage_date if tillage_replanting_detected else None
                 }
             
@@ -1049,11 +1049,10 @@ def generate_ndvi_timeseries():
         # Progressive cloud filtering approach
         cloud_thresholds = [10, 20, 30, 50, 80]  # Progressive thresholds to try
         collection = None
-        initial_collection_size = 0 # To store the size before any client-side processing
         
         for threshold in cloud_thresholds:
             # Get Sentinel-2 collection with cloud filtering
-            current_collection = (
+            collection = (
                 ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
                 .filterBounds(polygon)
                 .filterDate(start, end)
@@ -1061,111 +1060,80 @@ def generate_ndvi_timeseries():
             )
             
             # Check if we found any images
-            # Note: .size() is a server-side operation.
-            # We get its value once after finding a suitable collection.
-            size_info = current_collection.size().getInfo() 
-            if size_info > 0:
-                collection = current_collection
-                initial_collection_size = size_info
-                print(f"Found {initial_collection_size} images with cloud threshold {threshold}%")
+            collection_size = collection.size().getInfo()
+            if collection_size > 0:
+                print(f"Found {collection_size} images with cloud threshold {threshold}%")
                 break
         
         # Handle empty collection after all attempts
-        if collection is None or initial_collection_size == 0:
+        collection_size = collection.size().getInfo() if collection else 0
+        if collection_size == 0:
             return jsonify({
                 "success": False, 
                 "error": "No Sentinel-2 imagery found for the specified date range and location",
                 "empty_collection": True
             }), 404
         
-        # Define a server-side function to process each image
-        def process_image(image):
-            # Calculate NDVI
-            ndvi_image = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
+        # Get list of all images in the collection
+        image_list = collection.toList(collection.size())
+        
+        # Process each image to get NDVI time series
+        ndvi_time_series = []
+        
+        for i in range(collection_size):
+            # Get the image
+            image = ee.Image(image_list.get(i))
             
-            # Clip the NDVI image to the polygon
-            clipped_ndvi = ndvi_image.clip(polygon)
-
-            # Reduce region to get mean NDVI for the polygon
-            ndvi_stat = clipped_ndvi.reduceRegion(
+            # Clip to polygon
+            clipped_image = image.clip(polygon)
+            
+            # Calculate NDVI
+            ndvi = clipped_image.normalizedDifference(["B8", "B4"]).rename("NDVI")
+            
+            # Calculate mean NDVI for the polygon
+            ndvi_stats = ndvi.reduceRegion(
                 reducer=ee.Reducer.mean(),
                 geometry=polygon,
-                scale=10,  # Scale for Sentinel-2 10m bands
+                scale=10,
                 maxPixels=1e9
-            ).get("NDVI") # This will be the mean NDVI value or null if no valid pixels
-
-            # Get other properties
-            date_string = image.date().format("YYYY-MM-dd") # ee.String
-            cloud_perc = image.get("CLOUDY_PIXEL_PERCENTAGE") # ee.Number
+            ).getInfo()
             
-            # Return a feature with all necessary properties
-            # Ensure all returned properties are EE objects or serializable by .getInfo()
-            return ee.Feature(None, {
-                'date': date_string,
-                'ndvi': ndvi_stat, # This is an ee.Number or null
-                'cloud_percentage': cloud_perc # This is an ee.Number or null
-            })
-
-        # Map the processing function over the collection. This results in an ee.FeatureCollection.
-        processed_features = collection.map(process_image)
-        
-        # Filter out features where NDVI is null (e.g., no valid data for the polygon in an image)
-        # This is done server-side before getInfo()
-        valid_features = processed_features.filter(ee.Filter.NotNull(['ndvi']))
-        
-        # Get all results in a single .getInfo() call
-        # The result will be a GeoJSON-like FeatureCollection dictionary
-        feature_collection_info = valid_features.getInfo()
-        
-        ndvi_time_series = []
-        # Extract data from the features
-        if feature_collection_info and 'features' in feature_collection_info:
-            for feature_dict in feature_collection_info['features']:
-                properties = feature_dict.get('properties', {})
-                # ndvi value should not be null here due to the server-side filter
+            # Get image acquisition date
+            image_date = image.date().format("YYYY-MM-dd").getInfo()
+            
+            # Get cloud percentage
+            cloud_percentage = image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
+            
+            # Only add valid NDVI readings
+            ndvi_value = ndvi_stats.get("NDVI")
+            if ndvi_value is not None:
                 ndvi_time_series.append({
-                    "date": properties.get('date'),
-                    "ndvi": properties.get('ndvi'),
-                    "cloud_percentage": properties.get('cloud_percentage')
+                    "date": image_date,
+                    "ndvi": ndvi_value,
+                    "cloud_percentage": cloud_percentage
                 })
         
-        # Verify we have sufficient data points after processing and filtering
+        # Verify we have sufficient data points
         if len(ndvi_time_series) == 0:
             return jsonify({
                 "success": False, 
-                "error": "No valid NDVI readings could be calculated for this field after processing.",
+                "error": "No valid NDVI readings could be calculated for this field",
                 "empty_time_series": True
             }), 404
         
-        # Sort time series by date (client-side, as getInfo on a mapped collection doesn't guarantee order)
+        # Sort time series by date
         ndvi_time_series.sort(key=lambda x: x["date"])
         
         # Return response with time series data
         response = {
             "success": True,
             "time_series": ndvi_time_series,
-            "collection_size": initial_collection_size # This is the size of the GEE collection before client-side processing
+            "collection_size": collection_size
         }
         
-        print(f"Successfully processed NDVI time series request. {len(ndvi_time_series)} data points returned from initial {initial_collection_size} images.")
+        print(f"Successfully processed NDVI time series request. {len(ndvi_time_series)} data points returned.")
         return jsonify(response)
 
-    except ee.EEException as e: # Catch GEE specific errors
-        error_message = str(e)
-        # Check for common GEE timeout messages
-        if "Computation timed out" in error_message or "internal error" in error_message.lower():
-             error_message = "GEE computation timed out or encountered an internal error. This can happen with very large polygons or long date ranges. Please try a smaller area or shorter period."
-        
-        stack_trace = traceback.format_exc()
-        print(f"GEE EEException in time series processing: {error_message}")
-        print(f"Stack trace: {stack_trace}")
-        
-        return jsonify({
-            "success": False, 
-            "error": error_message,
-            "stack_trace": stack_trace,
-            "gee_error": True
-        }), 500
     except Exception as e:
         error_message = str(e)
         stack_trace = traceback.format_exc()
