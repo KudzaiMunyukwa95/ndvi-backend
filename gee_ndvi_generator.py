@@ -885,6 +885,7 @@ def generate_ndvi():
         # until we find enough imagery
         cloud_thresholds = [10, 20, 30, 50, 80]  # Progressive thresholds to try
         collection = None
+        collection_size = 0
         
         for threshold in cloud_thresholds:
             # Get Sentinel-2 collection with cloud filtering
@@ -901,14 +902,13 @@ def generate_ndvi():
             collection = collection.limit(limit_size)
             
             # Check if we found any images
-            collection_size = collection.size().getInfo()
-            if collection_size > 0:
-                print(f"Found {collection_size} images with cloud threshold {threshold}%")
+            collection_size = collection.size()
+            if collection_size.getInfo() > 0:
+                print(f"Found {collection_size.getInfo()} images with cloud threshold {threshold}%")
                 break
         
         # Handle empty collection after all attempts
-        collection_size = collection.size().getInfo() if collection else 0
-        if collection_size == 0:
+        if collection_size.getInfo() == 0:
             return jsonify({
                 "success": False, 
                 "error": "No Sentinel-2 imagery found for the specified date range and location",
@@ -918,10 +918,6 @@ def generate_ndvi():
         # Get median image and clip to polygon
         image = collection.median().clip(polygon)
         
-        # ENHANCED: Save the cloud percentage of the best image for reporting
-        first_image = collection.first()
-        cloud_percentage = first_image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
-        
         # Calculate NDVI
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
         rgb = image.select(["B4", "B3", "B2"])
@@ -930,23 +926,61 @@ def generate_ndvi():
         ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
         rgb_vis = rgb.visualize(min=0, max=3000)
         
-        # Get map IDs for tile URLs with timeout handling
-        try:
-            map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
-            map_id_rgb = ee.data.getMapId({"image": rgb_vis})
-        except Exception as e:
-            print(f"Error getting map IDs: {e}")
-            # Still return statistics even if visualization fails
-            ndvi_stats = ndvi.reduceRegion(
+        # OPTIMIZED: Combine all metadata extraction into a single operation
+        first_image = collection.first()
+        
+        # Create a combined operation to get NDVI stats, image date, and cloud percentage
+        combined_data = ee.Dictionary({
+            'ndvi_stats': ndvi.reduceRegion(
                 reducer=ee.Reducer.mean().combine(
                     ee.Reducer.minMax(), "", True
                 ),
                 geometry=polygon,
                 scale=10,
                 maxPixels=1e9
-            ).getInfo()
+            ),
+            'image_date': first_image.date().format("YYYY-MM-dd"),
+            'cloud_percentage': first_image.get("CLOUDY_PIXEL_PERCENTAGE"),
+            'collection_size': collection_size
+        })
+        
+        # Get map IDs for tile URLs with timeout handling
+        try:
+            map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
+            map_id_rgb = ee.data.getMapId({"image": rgb_vis})
             
-            image_date = first_image.date().format("YYYY-MM-dd").getInfo()
+            # Single .getInfo() call to get all data
+            all_data = combined_data.getInfo()
+            ndvi_stats = all_data['ndvi_stats']
+            image_date = all_data['image_date']
+            cloud_percentage = all_data['cloud_percentage']
+            collection_size_val = all_data['collection_size']
+            
+            # Return response with all data including cloud percentage
+            response = {
+                "success": True,
+                "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
+                "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format,
+                "mean_ndvi": ndvi_stats.get("NDVI_mean"),
+                "min_ndvi": ndvi_stats.get("NDVI_min"),
+                "max_ndvi": ndvi_stats.get("NDVI_max"),
+                "image_date": image_date,
+                "collection_size": collection_size_val,
+                "cloudy_pixel_percentage": cloud_percentage
+            }
+            
+            print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Cloud cover: {cloud_percentage}%")
+            return jsonify(response)
+            
+        except Exception as e:
+            print(f"Error getting map IDs: {e}")
+            # Still return statistics even if visualization fails
+            # Single .getInfo() call to get all data
+            all_data = combined_data.getInfo()
+            ndvi_stats = all_data['ndvi_stats']
+            image_date = all_data['image_date']
+            cloud_percentage = all_data['cloud_percentage']
+            collection_size_val = all_data['collection_size']
             
             return jsonify({
                 "success": True,
@@ -954,39 +988,10 @@ def generate_ndvi():
                 "min_ndvi": ndvi_stats.get("NDVI_min"),
                 "max_ndvi": ndvi_stats.get("NDVI_max"),
                 "image_date": image_date,
-                "collection_size": collection_size,
+                "collection_size": collection_size_val,
                 "cloudy_pixel_percentage": cloud_percentage,
                 "visualization_error": str(e)
             })
-        
-        # Calculate NDVI statistics
-        ndvi_stats = ndvi.reduceRegion(
-            reducer=ee.Reducer.mean().combine(
-                ee.Reducer.minMax(), "", True
-            ),
-            geometry=polygon,
-            scale=10,
-            maxPixels=1e9
-        ).getInfo()
-        
-        # Get image acquisition date from first image in collection
-        image_date = first_image.date().format("YYYY-MM-dd").getInfo()
-        
-        # Return response with all data including cloud percentage
-        response = {
-            "success": True,
-            "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
-            "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format,
-            "mean_ndvi": ndvi_stats.get("NDVI_mean"),
-            "min_ndvi": ndvi_stats.get("NDVI_min"),
-            "max_ndvi": ndvi_stats.get("NDVI_max"),
-            "image_date": image_date,
-            "collection_size": collection_size,
-            "cloudy_pixel_percentage": cloud_percentage
-        }
-        
-        print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Cloud cover: {cloud_percentage}%")
-        return jsonify(response)
 
     except Exception as e:
         error_message = str(e)
@@ -1057,7 +1062,6 @@ def generate_ndvi_timeseries():
                 .filterBounds(polygon)
                 .filterDate(start, end)
                 .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold))
-                .sort("system:time_start")  # Sort by acquisition time
             )
             
             # Check if we found any images
@@ -1075,13 +1079,14 @@ def generate_ndvi_timeseries():
                 "empty_collection": True
             }), 404
         
-        # OPTIMIZED: Define server-side mapping function to process all images at once
-        def map_ndvi_calculation(image):
-            # Clip image to polygon
+        # OPTIMIZED: Use collection.map() to process all images on server side
+        def process_image(image):
+            """Process each image to extract NDVI, date, and cloud percentage"""
+            # Clip to polygon
             clipped = image.clip(polygon)
             
             # Calculate NDVI
-            ndvi = clipped.normalizedDifference(["B8", "B4"]).rename("NDVI")
+            ndvi = clipped.normalizedDifference(["B8", "B4"])
             
             # Calculate mean NDVI for the polygon
             ndvi_mean = ndvi.reduceRegion(
@@ -1089,51 +1094,37 @@ def generate_ndvi_timeseries():
                 geometry=polygon,
                 scale=10,
                 maxPixels=1e9
-            ).get("NDVI")
+            ).get('nd')
             
-            # Get date as milliseconds since epoch, then format
-            date_millis = image.get("system:time_start")
-            date_formatted = ee.Date(date_millis).format("YYYY-MM-dd")
-            
-            # Get cloud percentage
-            cloud_percentage = image.get("CLOUDY_PIXEL_PERCENTAGE")
-            
-            # Return as a feature with properties we need
+            # Create feature with all required data
             return ee.Feature(None, {
-                "date": date_formatted,
-                "ndvi": ndvi_mean,
-                "cloud_percentage": cloud_percentage,
-                "date_millis": date_millis  # Keep for sorting
+                'date': image.date().format('YYYY-MM-dd'),
+                'ndvi': ndvi_mean,
+                'cloud_percentage': image.get('CLOUDY_PIXEL_PERCENTAGE')
             })
         
-        # OPTIMIZED: Map the function over the entire collection on the server side
-        print("Processing all images on GEE servers...")
-        mapped_collection = collection.map(map_ndvi_calculation)
+        # Map the processing function over the entire collection
+        processed_collection = collection.map(process_image)
         
-        # OPTIMIZED: Get all results in a single .getInfo() call
-        # Convert to list and get all features at once
-        feature_list = mapped_collection.toList(collection_size)
+        # Convert to FeatureCollection and get all data in a single call
+        feature_collection = ee.FeatureCollection(processed_collection)
         
-        # Extract all data in one server call
-        all_results = feature_list.map(lambda feat: ee.Feature(feat).toDictionary()).getInfo()
+        # Single .getInfo() call to get all time series data
+        features = feature_collection.getInfo()['features']
         
-        print(f"Retrieved {len(all_results)} results from GEE servers")
-        
-        # Process results and filter out invalid NDVI values
+        # Extract NDVI time series data
         ndvi_time_series = []
         
-        for result in all_results:
-            properties = result.get("properties", {})
-            ndvi_value = properties.get("ndvi")
-            date_str = properties.get("date")
-            cloud_pct = properties.get("cloud_percentage")
+        for feature in features:
+            properties = feature['properties']
+            ndvi_value = properties.get('ndvi')
             
             # Only add valid NDVI readings
-            if ndvi_value is not None and date_str is not None:
+            if ndvi_value is not None:
                 ndvi_time_series.append({
-                    "date": date_str,
-                    "ndvi": float(ndvi_value),
-                    "cloud_percentage": float(cloud_pct) if cloud_pct is not None else None
+                    "date": properties['date'],
+                    "ndvi": ndvi_value,
+                    "cloud_percentage": properties['cloud_percentage']
                 })
         
         # Verify we have sufficient data points
@@ -1144,7 +1135,7 @@ def generate_ndvi_timeseries():
                 "empty_time_series": True
             }), 404
         
-        # Sort time series by date (should already be sorted, but ensure it)
+        # Sort time series by date
         ndvi_time_series.sort(key=lambda x: x["date"])
         
         # Return response with time series data
