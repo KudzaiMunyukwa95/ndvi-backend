@@ -1057,6 +1057,7 @@ def generate_ndvi_timeseries():
                 .filterBounds(polygon)
                 .filterDate(start, end)
                 .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold))
+                .sort("system:time_start")  # Sort by acquisition time
             )
             
             # Check if we found any images
@@ -1074,43 +1075,65 @@ def generate_ndvi_timeseries():
                 "empty_collection": True
             }), 404
         
-        # Get list of all images in the collection
-        image_list = collection.toList(collection.size())
-        
-        # Process each image to get NDVI time series
-        ndvi_time_series = []
-        
-        for i in range(collection_size):
-            # Get the image
-            image = ee.Image(image_list.get(i))
-            
-            # Clip to polygon
-            clipped_image = image.clip(polygon)
+        # OPTIMIZED: Define server-side mapping function to process all images at once
+        def map_ndvi_calculation(image):
+            # Clip image to polygon
+            clipped = image.clip(polygon)
             
             # Calculate NDVI
-            ndvi = clipped_image.normalizedDifference(["B8", "B4"]).rename("NDVI")
+            ndvi = clipped.normalizedDifference(["B8", "B4"]).rename("NDVI")
             
             # Calculate mean NDVI for the polygon
-            ndvi_stats = ndvi.reduceRegion(
+            ndvi_mean = ndvi.reduceRegion(
                 reducer=ee.Reducer.mean(),
                 geometry=polygon,
                 scale=10,
                 maxPixels=1e9
-            ).getInfo()
+            ).get("NDVI")
             
-            # Get image acquisition date
-            image_date = image.date().format("YYYY-MM-dd").getInfo()
+            # Get date as milliseconds since epoch, then format
+            date_millis = image.get("system:time_start")
+            date_formatted = ee.Date(date_millis).format("YYYY-MM-dd")
             
             # Get cloud percentage
-            cloud_percentage = image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
+            cloud_percentage = image.get("CLOUDY_PIXEL_PERCENTAGE")
+            
+            # Return as a feature with properties we need
+            return ee.Feature(None, {
+                "date": date_formatted,
+                "ndvi": ndvi_mean,
+                "cloud_percentage": cloud_percentage,
+                "date_millis": date_millis  # Keep for sorting
+            })
+        
+        # OPTIMIZED: Map the function over the entire collection on the server side
+        print("Processing all images on GEE servers...")
+        mapped_collection = collection.map(map_ndvi_calculation)
+        
+        # OPTIMIZED: Get all results in a single .getInfo() call
+        # Convert to list and get all features at once
+        feature_list = mapped_collection.toList(collection_size)
+        
+        # Extract all data in one server call
+        all_results = feature_list.map(lambda feat: ee.Feature(feat).toDictionary()).getInfo()
+        
+        print(f"Retrieved {len(all_results)} results from GEE servers")
+        
+        # Process results and filter out invalid NDVI values
+        ndvi_time_series = []
+        
+        for result in all_results:
+            properties = result.get("properties", {})
+            ndvi_value = properties.get("ndvi")
+            date_str = properties.get("date")
+            cloud_pct = properties.get("cloud_percentage")
             
             # Only add valid NDVI readings
-            ndvi_value = ndvi_stats.get("NDVI")
-            if ndvi_value is not None:
+            if ndvi_value is not None and date_str is not None:
                 ndvi_time_series.append({
-                    "date": image_date,
-                    "ndvi": ndvi_value,
-                    "cloud_percentage": cloud_percentage
+                    "date": date_str,
+                    "ndvi": float(ndvi_value),
+                    "cloud_percentage": float(cloud_pct) if cloud_pct is not None else None
                 })
         
         # Verify we have sufficient data points
@@ -1121,7 +1144,7 @@ def generate_ndvi_timeseries():
                 "empty_time_series": True
             }), 404
         
-        # Sort time series by date
+        # Sort time series by date (should already be sorted, but ensure it)
         ndvi_time_series.sort(key=lambda x: x["date"])
         
         # Return response with time series data
