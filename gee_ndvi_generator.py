@@ -7,8 +7,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
-import concurrent.futures
-import threading
 
 # Load environment variables
 load_dotenv()
@@ -16,12 +14,8 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Initialize OpenAI client with faster model for insights
+# Initialize OpenAI client
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
-# Cache for GEE collections to avoid redundant API calls
-collection_cache = {}
-cache_lock = threading.Lock()
 
 # Define crop-specific emergence windows (in days)
 EMERGENCE_WINDOWS = {
@@ -45,76 +39,7 @@ SIGNIFICANT_RAINFALL = 10  # mm, threshold for significant rainfall
 def index():
     return "NDVI & RGB backend is live!"
 
-# OPTIMIZED: Cached collection getter
-def get_cached_collection(coords, start, end):
-    """Get cached collection or create new one"""
-    cache_key = f"{str(coords)}_{start}_{end}"
-    
-    with cache_lock:
-        if cache_key in collection_cache:
-            return collection_cache[cache_key]
-    
-    # Create Earth Engine geometry
-    polygon = ee.Geometry.Polygon(coords)
-    
-    # Base collection
-    base_collection = (
-        ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
-        .filterBounds(polygon)
-        .filterDate(start, end)
-        .sort("CLOUDY_PIXEL_PERCENTAGE")
-    )
-    
-    with cache_lock:
-        collection_cache[cache_key] = base_collection
-    
-    return base_collection
-
-# OPTIMIZED: Single server-side operation for cloud filtering
-def get_best_collection_optimized(base_collection):
-    """Get best collection using server-side operations only"""
-    
-    # Create all filtered collections in a single server-side operation
-    filtered_collections = ee.List([10, 20, 30, 50, 80]).map(lambda threshold:
-        ee.Dictionary({
-            'threshold': threshold,
-            'collection': base_collection.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold)),
-            'limit': ee.Algorithms.If(ee.Number(threshold).lte(20), 10, 
-                      ee.Algorithms.If(ee.Number(threshold).lte(50), 5, 3))
-        })
-    )
-    
-    # Find first collection with images using server-side logic
-    def select_collection(collections):
-        collections_with_size = collections.map(lambda item:
-            ee.Dictionary(item).set('size', 
-                ee.ImageCollection(ee.Dictionary(item).get('collection')).size())
-        )
-        
-        valid_collections = collections_with_size.filter(ee.Filter.gt('size', 0))
-        
-        return ee.Algorithms.If(
-            valid_collections.size().gt(0),
-            ee.Dictionary(valid_collections.get(0)),
-            ee.Dictionary({
-                'collection': base_collection.limit(0),
-                'size': 0,
-                'threshold': 100
-            })
-        )
-    
-    best_collection_info = select_collection(filtered_collections)
-    collection = ee.ImageCollection(best_collection_info.get('collection'))
-    
-    # Apply limit based on threshold
-    limit_size = ee.Algorithms.If(
-        ee.Number(best_collection_info.get('threshold')).lte(20), 10,
-        ee.Algorithms.If(ee.Number(best_collection_info.get('threshold')).lte(50), 5, 3)
-    )
-    
-    return collection.limit(limit_size), best_collection_info.get('size')
-
-# NEW FUNCTION: Detect rainfall trigger events without NDVI response (unchanged)
+# NEW FUNCTION: Detect rainfall trigger events without NDVI response
 def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_threshold=10, ndvi_threshold=0.2, response_window_days=14):
     """
     Detect significant rainfall events that aren't followed by crop emergence.
@@ -216,7 +141,7 @@ def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_thr
     
     return None
 
-# NEW FUNCTION: Detect post-tillage emergence and estimate planting window (unchanged)
+# NEW FUNCTION: Detect post-tillage emergence and estimate planting window
 def detect_post_tillage_emergence(ndvi_data, crop_type, tillage_date, irrigated, rainfall_data=None):
     """
     Detects emergence after a tillage event and estimates planting window.
@@ -357,7 +282,7 @@ def detect_post_tillage_emergence(ndvi_data, crop_type, tillage_date, irrigated,
         "tillage_replanting_detected": True
     }
 
-# Function to detect emergence and estimate planting window (unchanged - just faster data processing)
+# Function to detect emergence and estimate planting window
 def detect_emergence_and_estimate_planting(ndvi_data, crop_type, irrigated, rainfall_data=None):
     # Sort NDVI data by date
     sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
@@ -508,17 +433,19 @@ def generate_agronomic_report():
         temperature_summary = data.get("temperature_summary", {})
         base_temperature = data.get("base_temperature", 10)
         
-        # OPTIMIZED: Pre-compute all statistical data in parallel using list comprehensions
         # Calculate average cloud cover if available
-        cloud_percentages = [item["cloud_percentage"] for item in ndvi_data if item.get("cloud_percentage") is not None]
-        avg_cloud_cover = sum(cloud_percentages) / len(cloud_percentages) if cloud_percentages else None
+        avg_cloud_cover = None
+        if ndvi_data and all("cloud_percentage" in item for item in ndvi_data):
+            cloud_percentages = [item["cloud_percentage"] for item in ndvi_data if item["cloud_percentage"] is not None]
+            if cloud_percentages:
+                avg_cloud_cover = sum(cloud_percentages) / len(cloud_percentages)
         
-        # Format NDVI data (optimized)
+        # Format NDVI data
         ndvi_formatted = ", ".join([f"{item['date']}: {item['ndvi']:.2f}" for item in ndvi_data[:10]]) if ndvi_data else "No data"
         if len(ndvi_data) > 10:
             ndvi_formatted += f" (+ {len(ndvi_data) - 10} more readings)"
         
-        # Process rainfall data into weekly totals if available (optimized)
+        # Process rainfall data into weekly totals if available
         weekly_rainfall = {}
         if irrigated == "Yes":
             rainfall_formatted = "Not applicable for irrigated fields"
@@ -526,103 +453,122 @@ def generate_agronomic_report():
             for item in rainfall_data:
                 date = item.get('date')
                 if date:
+                    # Simple weekly grouping by taking the first 7 chars of date (YYYY-MM)
+                    # and the week number within the month (rough approximation)
                     week_key = date[:7] + "-W" + str((int(date[8:10]) - 1) // 7 + 1)
-                    weekly_rainfall[week_key] = weekly_rainfall.get(week_key, 0) + item.get('rainfall', 0)
+                    if week_key not in weekly_rainfall:
+                        weekly_rainfall[week_key] = 0
+                    weekly_rainfall[week_key] += item.get('rainfall', 0)
+            
             rainfall_formatted = ", ".join([f"{week}: {total:.1f}mm" for week, total in weekly_rainfall.items()])
         else:
             rainfall_formatted = "No data"
         
-        # Format temperature data (optimized)
+        # Format temperature data
         temp_formatted = "No data"
         if temperature_data:
-            min_temps = [item["min"] for item in temperature_data]
-            max_temps = [item["max"] for item in temperature_data]
-            avg_min = sum(min_temps) / len(min_temps)
-            avg_max = sum(max_temps) / len(max_temps)
-            temp_formatted = f"Avg min: {avg_min:.1f}°C, Avg max: {avg_max:.1f}°C, Range: {min(min_temps):.1f}°C to {max(max_temps):.1f}°C"
+            avg_min = sum(item["min"] for item in temperature_data) / len(temperature_data)
+            avg_max = sum(item["max"] for item in temperature_data) / len(temperature_data)
+            temp_formatted = f"Avg min: {avg_min:.1f}°C, Avg max: {avg_max:.1f}°C, Range: {min(item['min'] for item in temperature_data):.1f}°C to {max(item['max'] for item in temperature_data):.1f}°C"
         
         # Format GDD data
         gdd_formatted = "No data"
         if gdd_stats:
             gdd_formatted = f"Cumulative GDD: {gdd_stats.get('total_gdd', 'N/A')}, Avg daily GDD: {gdd_stats.get('avg_daily_gdd', 'N/A')}, Base temp: {base_temperature}°C"
         
-        # OPTIMIZED: Calculate NDVI change rates with vectorized operations
+        # Calculate NDVI change rate if we have enough data points
         ndvi_change_rates = []
         if len(ndvi_data) > 1:
+            # Sort data by date
             sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
             
-            # Pre-convert all dates to datetime objects
-            dates = [datetime.strptime(item['date'], '%Y-%m-%d') for item in sorted_ndvi]
-            ndvi_values = [item['ndvi'] for item in sorted_ndvi]
-            
-            # Calculate change rates in a single loop
+            # Calculate change rates
             for i in range(1, len(sorted_ndvi)):
-                days_diff = (dates[i] - dates[i-1]).days
-                if days_diff > 0:
-                    ndvi_diff = ndvi_values[i] - ndvi_values[i-1]
-                    change_rate = ndvi_diff / days_diff
-                    ndvi_change_rates.append({
-                        'start_date': sorted_ndvi[i-1]['date'],
-                        'end_date': sorted_ndvi[i]['date'],
-                        'days': days_diff,
-                        'change_rate': change_rate,
-                        'total_change': ndvi_diff
-                    })
+                try:
+                    date1 = datetime.strptime(sorted_ndvi[i-1]['date'], '%Y-%m-%d')
+                    date2 = datetime.strptime(sorted_ndvi[i]['date'], '%Y-%m-%d')
+                    days_diff = (date2 - date1).days
+                    
+                    if days_diff > 0:  # Avoid division by zero
+                        ndvi_diff = sorted_ndvi[i]['ndvi'] - sorted_ndvi[i-1]['ndvi']
+                        change_rate = ndvi_diff / days_diff
+                        ndvi_change_rates.append({
+                            'start_date': sorted_ndvi[i-1]['date'],
+                            'end_date': sorted_ndvi[i]['date'],
+                            'days': days_diff,
+                            'change_rate': change_rate,
+                            'total_change': ndvi_diff
+                        })
+                except Exception as e:
+                    print(f"Error calculating NDVI change rate: {e}")
 
-        # Format NDVI change rate data for the prompt (optimized)
+        # Format NDVI change rate data for the prompt
         ndvi_change_formatted = "No data"
         if ndvi_change_rates:
-            # Find significant changes using list comprehension
-            significant_changes = [r for r in ndvi_change_rates if abs(r['change_rate']) > 0.005]
+            # Find the periods with significant changes
+            significant_changes = [r for r in ndvi_change_rates if abs(r['change_rate']) > 0.005]  # 0.005 per day is significant
             
             if significant_changes:
-                # Sort by absolute change rate and take top 3
+                # Sort by absolute change rate
                 significant_changes.sort(key=lambda x: abs(x['change_rate']), reverse=True)
+                
+                # Format top 3 changes
                 top_changes = significant_changes[:3]
                 ndvi_change_formatted = ", ".join([
                     f"{c['start_date']} to {c['end_date']}: {c['change_rate']*100:.2f}% per day ({c['total_change']:.2f} over {c['days']} days)"
                     for c in top_changes
                 ])
         
-        # OPTIMIZED: Analyze NDVI patterns using vectorized operations
+        # Analyze NDVI patterns to detect possible tillage/replanting scenarios
         tillage_replanting_detected = False
         tillage_info = "No tillage or replanting pattern detected"
         tillage_date = None
+        drop_start_idx = -1
+        drop_end_idx = -1
         
         if len(ndvi_data) >= 3:
             sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
-            ndvi_values = [item['ndvi'] for item in sorted_ndvi]
+            # Look for high -> low -> high pattern
+            max_drop = 0
             
-            # Vectorized search for maximum drop
-            drops = [(i, ndvi_values[i-1] - ndvi_values[i]) 
-                    for i in range(1, len(ndvi_values)) 
-                    if ndvi_values[i-1] - ndvi_values[i] > 0.15 and ndvi_values[i-1] > 0.3]
+            for i in range(1, len(sorted_ndvi)):
+                current_drop = sorted_ndvi[i-1]['ndvi'] - sorted_ndvi[i]['ndvi']
+                if current_drop > max_drop and current_drop > 0.15 and sorted_ndvi[i-1]['ndvi'] > 0.3:
+                    max_drop = current_drop
+                    drop_start_idx = i-1
+                    drop_end_idx = i
             
-            if drops:
-                # Find index with maximum drop
-                drop_idx = max(drops, key=lambda x: x[1])[0]
+            # If we found a significant drop, check if NDVI rises again afterward
+            if drop_start_idx >= 0 and drop_end_idx < len(sorted_ndvi) - 1:
+                # Look for subsequent rise
+                subsequent_rise = False
+                for i in range(drop_end_idx + 1, len(sorted_ndvi)):
+                    if sorted_ndvi[i]['ndvi'] > sorted_ndvi[drop_end_idx]['ndvi'] + 0.1:
+                        subsequent_rise = True
+                        break
                 
-                # Check for subsequent rise
-                if drop_idx < len(sorted_ndvi) - 1:
-                    for i in range(drop_idx + 1, len(sorted_ndvi)):
-                        if sorted_ndvi[i]['ndvi'] > sorted_ndvi[drop_idx]['ndvi'] + 0.1:
-                            tillage_replanting_detected = True
-                            tillage_date = sorted_ndvi[drop_idx]['date']
-                            tillage_info = (f"Potential tillage/replanting detected: NDVI dropped from {sorted_ndvi[drop_idx-1]['ndvi']:.2f} "
-                                           f"to {sorted_ndvi[drop_idx]['ndvi']:.2f} around {sorted_ndvi[drop_idx]['date']}, "
-                                           f"then rose again afterward")
-                            print(f"Tillage/replanting detected on {tillage_date}")
-                            break
+                if subsequent_rise:
+                    tillage_replanting_detected = True
+                    tillage_date = sorted_ndvi[drop_end_idx]['date']
+                    tillage_info = (f"Potential tillage/replanting detected: NDVI dropped from {sorted_ndvi[drop_start_idx]['ndvi']:.2f} "
+                                   f"to {sorted_ndvi[drop_end_idx]['ndvi']:.2f} around {sorted_ndvi[drop_end_idx]['date']}, "
+                                   f"then rose again afterward")
+                    print(f"Tillage/replanting detected on {tillage_date}")
         
-        # OPTIMIZED: Check for consistently high NDVI values using vectorized operations
+        # Check for consistently high NDVI values - ONLY if no tillage/replanting pattern detected
         consistently_high_ndvi = False
         if ndvi_data and not tillage_replanting_detected:
-            ndvi_values = [item['ndvi'] for item in ndvi_data]
-            consistently_high_ndvi = all(val > 0.4 for val in ndvi_values)
-            if consistently_high_ndvi:
-                print(f"Detected consistently high NDVI: min={min(ndvi_values):.2f}, max={max(ndvi_values):.2f}, avg={sum(ndvi_values)/len(ndvi_values):.2f}")
+            sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+            ndvi_values = [item['ndvi'] for item in sorted_ndvi]
+            # Consider consistently high if all values are above 0.4
+            if all(val > 0.4 for val in ndvi_values):
+                consistently_high_ndvi = True
+                high_ndvi_min = min(ndvi_values)
+                high_ndvi_max = max(ndvi_values)
+                high_ndvi_avg = sum(ndvi_values) / len(ndvi_values)
+                print(f"Detected consistently high NDVI: min={high_ndvi_min:.2f}, max={high_ndvi_max:.2f}, avg={high_ndvi_avg:.2f}")
         
-        # Smart planting date estimation (using existing optimized functions)
+        # Smart planting date estimation
         planting_date_results = None
         planting_window_text = None
         
@@ -637,6 +583,8 @@ def generate_agronomic_report():
                     irrigated=irrigated,
                     rainfall_data=rainfall_data if irrigated == "No" else None
                 )
+                
+                # Use the message from the post-tillage function
                 planting_window_text = planting_date_results["message"]
                 print(f"Post-tillage planting window: {planting_window_text}")
                 
@@ -658,11 +606,13 @@ def generate_agronomic_report():
                 if planting_date_results["preEstablished"]:
                     planting_window_text = "Crop was already established before the analysis period began."
                 elif "rainfall_without_emergence" in planting_date_results and planting_date_results["rainfall_without_emergence"]:
+                    # Handle the new case of rainfall without emergence
                     planting_window_text = planting_date_results["message"]
                 elif planting_date_results["plantingWindowStart"] and planting_date_results["plantingWindowEnd"]:
                     start_formatted = format_date_for_display(planting_date_results["plantingWindowStart"])
                     end_formatted = format_date_for_display(planting_date_results["plantingWindowEnd"])
                     
+                    # Use rainfall-adjusted date if available for rainfed fields
                     if irrigated == "No" and planting_date_results["rainfallAdjustedPlanting"]:
                         rainfall_date = format_date_for_display(planting_date_results["rainfallAdjustedPlanting"])
                         planting_window_text = f"Likely planted between {start_formatted} and {end_formatted}, with rainfall data suggesting planting occurred around {rainfall_date}."
@@ -677,7 +627,7 @@ def generate_agronomic_report():
                 print(f"Error estimating planting window: {e}")
                 planting_window_text = "Error estimating planting window."
         
-        # Create special instructions for consistently high NDVI and tillage/replanting
+        # Create special instruction for consistently high NDVI (only if no tillage/replanting)
         high_ndvi_instruction = ""
         if consistently_high_ndvi and not tillage_replanting_detected:
             high_ndvi_instruction = """
@@ -687,6 +637,7 @@ DO NOT attempt to estimate a planting date. Instead, clearly state that the crop
 before the beginning of the analysis period.
 """
         
+        # Create special instruction for tillage/replanting
         tillage_instruction = ""
         if tillage_replanting_detected:
             tillage_instruction = f"""
@@ -699,6 +650,7 @@ DO NOT conclude that "the crop was already established before the analysis perio
 this would ignore the second crop cycle. Instead, highlight the tillage/replanting event and subsequent regrowth.
 """
         
+        # Create planting date instruction
         planting_date_instruction = ""
         if planting_window_text:
             planting_date_instruction = f"""
@@ -709,15 +661,14 @@ YOU MUST USE THIS EXACT PLANTING WINDOW STATEMENT in your response.
 DO NOT modify it, rephrase it, or use different dates.
 """
         
-        # OPTIMIZED: Use faster model and reduced prompt length
-        # Shortened prompt for faster processing
-        prompt = f"""You are Yieldera's agronomic AI. Generate concise crop commentary based on NDVI, temperature, {'rainfall, ' if irrigated == 'No' else ''}and GDD data.
+        # OPTIMIZED PROMPT: Shortened for faster processing while maintaining key information
+        prompt = f"""You are Yieldera's agronomic AI. Generate concise crop insight based on NDVI trends, {'rainfall, ' if irrigated == 'No' else ''}temperature, and GDD data.
 
 {high_ndvi_instruction}
 {tillage_instruction}
 {planting_date_instruction}
 
-📊 Data Summary:
+📊 Data:
 - Crop: {crop} ({variety}) - {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
 - Location: {latitude}, {longitude}
 - NDVI: {ndvi_formatted}
@@ -728,23 +679,23 @@ DO NOT modify it, rephrase it, or use different dates.
 - GDD: {gdd_formatted}
 - Period: {date_range}
 
-🎯 Required Analysis:
-1. NDVI Pattern (growth, stress, tillage events)
+🎯 Required:
+1. NDVI Pattern (growth/stress/tillage events)
 2. Temperature/GDD implications
 3. {'Rainfall response' if irrigated == 'No' else 'Irrigation management'}
-4. Crop status & planting date (use EXACT statement above)
+4. Crop status & exact planting statement above
 5. Confidence (High/Medium/Low)
 
 Respond in 2-3 sentences as field advisor. Include exact planting statement provided."""
 
-        # OPTIMIZED: Use faster model with parallel processing capability
+        # Call OpenAI API
         try:
             print(f"Sending request to generate insight for field: {field_name}")
             
             response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # FASTER MODEL: Changed from gpt-4o to gpt-4o-mini (5-10x faster)
+                model="gpt-4o-mini",  # FASTER MODEL: Changed from gpt-4o to gpt-4o-mini (3-5x faster)
                 messages=[
-                    {"role": "system", "content": "You are Yieldera's agricultural advisor. Be concise and actionable."},
+                    {"role": "system", "content": "You are Yieldera's agricultural advisor. Focus on planting date estimation. DO NOT mention AI, GPT, or any third-party tools."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,  # Lower temperature for faster processing
@@ -765,17 +716,23 @@ Respond in 2-3 sentences as field advisor. Include exact planting statement prov
                 confidence_level = planting_date_results["confidence"]
                 print(f"Using algorithm-determined confidence level: {confidence_level}")
             
-            # OPTIMIZED: Simplified confidence boosting logic
+            # IMPROVED CONFIDENCE LOGIC: Boost confidence based on data quality
             if confidence_level != "high" and ndvi_data and len(ndvi_data) >= 10:
-                if avg_cloud_cover is not None and avg_cloud_cover < 20:
+                # Check if NDVI pattern is consistent
+                ndvi_values = [item["ndvi"] for item in ndvi_data]
+                ndvi_std_dev = calculate_std_dev(ndvi_values)
+                
+                # If we have low cloud cover and consistent NDVI pattern, boost confidence
+                if avg_cloud_cover is not None and avg_cloud_cover < 20 and ndvi_std_dev < 0.15:
                     confidence_level = "high"
-                    print(f"Boosted confidence to high: {len(ndvi_data)} observations, {avg_cloud_cover:.1f}% cloud")
+                    print(f"Boosted confidence to high based on data quality: {len(ndvi_data)} observations, {avg_cloud_cover:.1f}% cloud cover")
             
-            # Final confidence adjustments
+            # If we detected consistently high NDVI (but no tillage), set confidence high
             if consistently_high_ndvi and not tillage_replanting_detected:
                 confidence_level = "high"
-                print("Set confidence to high for consistently high NDVI pattern")
+                print("Set confidence to high for consistently high NDVI pattern (pre-established crop)")
             
+            # If we detected rainfall without emergence, ensure confidence is low
             if planting_date_results and "rainfall_without_emergence" in planting_date_results and planting_date_results["rainfall_without_emergence"]:
                 confidence_level = "low"
                 print("Set confidence to low for rainfall without emergence pattern")
@@ -878,21 +835,43 @@ def generate_ndvi():
         # Log incoming request
         print(f"Processing request: start={start}, end={end}, coords length={len(coords)}")
         
-        # OPTIMIZED: Use cached collection and optimized filtering
-        base_collection = get_cached_collection(coords, start, end)
-        collection, collection_size = get_best_collection_optimized(base_collection)
+        # Create Earth Engine geometry
+        polygon = ee.Geometry.Polygon(coords)
+
+        # ENHANCED: Progressive cloud filtering approach
+        # Instead of using fixed thresholds, we'll try increasingly permissive filters
+        # until we find enough imagery
+        cloud_thresholds = [10, 20, 30, 50, 80]  # Progressive thresholds to try
+        collection = None
+        collection_size = 0
         
-        # Handle empty collection
-        collection_size_val = collection_size.getInfo() if hasattr(collection_size, 'getInfo') else collection_size
-        if collection_size_val == 0:
+        for threshold in cloud_thresholds:
+            # Get Sentinel-2 collection with cloud filtering
+            collection = (
+                ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+                .filterBounds(polygon)
+                .filterDate(start, end)
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold))
+                .sort("CLOUDY_PIXEL_PERCENTAGE")  # Sort by cloud percentage
+            )
+            
+            # Limit collection size based on cloud threshold - fewer images for higher cloud coverage
+            limit_size = 10 if threshold <= 20 else (5 if threshold <= 50 else 3)
+            collection = collection.limit(limit_size)
+            
+            # Check if we found any images
+            collection_size = collection.size()
+            if collection_size.getInfo() > 0:
+                print(f"Found {collection_size.getInfo()} images with cloud threshold {threshold}%")
+                break
+        
+        # Handle empty collection after all attempts
+        if collection_size.getInfo() == 0:
             return jsonify({
                 "success": False, 
                 "error": "No Sentinel-2 imagery found for the specified date range and location",
                 "empty_collection": True
             }), 404
-        
-        # Create polygon geometry
-        polygon = ee.Geometry.Polygon(coords)
         
         # Get median image and clip to polygon
         image = collection.median().clip(polygon)
@@ -905,77 +884,72 @@ def generate_ndvi():
         ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
         rgb_vis = rgb.visualize(min=0, max=3000)
         
-        # OPTIMIZED: Single server-side operation for all metadata
+        # OPTIMIZED: Combine all metadata extraction into a single operation
         first_image = collection.first()
         
+        # Create a combined operation to get NDVI stats, image date, and cloud percentage
         combined_data = ee.Dictionary({
             'ndvi_stats': ndvi.reduceRegion(
-                reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
+                reducer=ee.Reducer.mean().combine(
+                    ee.Reducer.minMax(), "", True
+                ),
                 geometry=polygon,
                 scale=10,
                 maxPixels=1e9
             ),
             'image_date': first_image.date().format("YYYY-MM-dd"),
             'cloud_percentage': first_image.get("CLOUDY_PIXEL_PERCENTAGE"),
-            'collection_size': collection_size_val
+            'collection_size': collection_size
         })
         
-        # OPTIMIZED: Parallel processing of map IDs and data fetching
-        def get_map_id_safe(image_vis):
-            try:
-                return ee.data.getMapId({"image": image_vis})
-            except Exception as e:
-                print(f"Error getting map ID: {e}")
-                return None
-        
-        # Get map IDs with timeout handling
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            future_ndvi = executor.submit(get_map_id_safe, ndvi_vis)
-            future_rgb = executor.submit(get_map_id_safe, rgb_vis)
+        # Get map IDs for tile URLs with timeout handling
+        try:
+            map_id_ndvi = ee.data.getMapId({"image": ndvi_vis})
+            map_id_rgb = ee.data.getMapId({"image": rgb_vis})
             
-            try:
-                # Get all data in single .getInfo() call
-                all_data = combined_data.getInfo()
-                
-                map_id_ndvi = future_ndvi.result(timeout=10)
-                map_id_rgb = future_rgb.result(timeout=10)
-                
-                ndvi_stats = all_data['ndvi_stats']
-                
-                response = {
-                    "success": True,
-                    "mean_ndvi": ndvi_stats.get("NDVI_mean"),
-                    "min_ndvi": ndvi_stats.get("NDVI_min"),
-                    "max_ndvi": ndvi_stats.get("NDVI_max"),
-                    "image_date": all_data['image_date'],
-                    "collection_size": all_data['collection_size'],
-                    "cloudy_pixel_percentage": all_data['cloud_percentage']
-                }
-                
-                # Add tile URLs if successful
-                if map_id_ndvi:
-                    response["ndvi_tile_url"] = map_id_ndvi["tile_fetcher"].url_format
-                if map_id_rgb:
-                    response["rgb_tile_url"] = map_id_rgb["tile_fetcher"].url_format
-                
-                print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Cloud cover: {all_data['cloud_percentage']}%")
-                return jsonify(response)
-                
-            except concurrent.futures.TimeoutError:
-                print("Timeout getting map IDs, returning statistics only")
-                all_data = combined_data.getInfo()
-                ndvi_stats = all_data['ndvi_stats']
-                
-                return jsonify({
-                    "success": True,
-                    "mean_ndvi": ndvi_stats.get("NDVI_mean"),
-                    "min_ndvi": ndvi_stats.get("NDVI_min"),
-                    "max_ndvi": ndvi_stats.get("NDVI_max"),
-                    "image_date": all_data['image_date'],
-                    "collection_size": all_data['collection_size'],
-                    "cloudy_pixel_percentage": all_data['cloud_percentage'],
-                    "visualization_timeout": True
-                })
+            # Single .getInfo() call to get all data
+            all_data = combined_data.getInfo()
+            ndvi_stats = all_data['ndvi_stats']
+            image_date = all_data['image_date']
+            cloud_percentage = all_data['cloud_percentage']
+            collection_size_val = all_data['collection_size']
+            
+            # Return response with all data including cloud percentage
+            response = {
+                "success": True,
+                "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
+                "rgb_tile_url": map_id_rgb["tile_fetcher"].url_format,
+                "mean_ndvi": ndvi_stats.get("NDVI_mean"),
+                "min_ndvi": ndvi_stats.get("NDVI_min"),
+                "max_ndvi": ndvi_stats.get("NDVI_max"),
+                "image_date": image_date,
+                "collection_size": collection_size_val,
+                "cloudy_pixel_percentage": cloud_percentage
+            }
+            
+            print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Cloud cover: {cloud_percentage}%")
+            return jsonify(response)
+            
+        except Exception as e:
+            print(f"Error getting map IDs: {e}")
+            # Still return statistics even if visualization fails
+            # Single .getInfo() call to get all data
+            all_data = combined_data.getInfo()
+            ndvi_stats = all_data['ndvi_stats']
+            image_date = all_data['image_date']
+            cloud_percentage = all_data['cloud_percentage']
+            collection_size_val = all_data['collection_size']
+            
+            return jsonify({
+                "success": True,
+                "mean_ndvi": ndvi_stats.get("NDVI_mean"),
+                "min_ndvi": ndvi_stats.get("NDVI_min"),
+                "max_ndvi": ndvi_stats.get("NDVI_max"),
+                "image_date": image_date,
+                "collection_size": collection_size_val,
+                "cloudy_pixel_percentage": cloud_percentage,
+                "visualization_error": str(e)
+            })
 
     except Exception as e:
         error_message = str(e)
@@ -1032,61 +1006,84 @@ def generate_ndvi_timeseries():
         # Log incoming request
         print(f"Processing time series request: start={start}, end={end}, coords length={len(coords[0])}")
         
-        # OPTIMIZED: Use cached collection and smart filtering
-        base_collection = get_cached_collection(coords, start, end)
-        collection, collection_size = get_best_collection_optimized(base_collection)
+        # Create Earth Engine geometry
+        polygon = ee.Geometry.Polygon(coords)
+
+        # Progressive cloud filtering approach
+        cloud_thresholds = [10, 20, 30, 50, 80]  # Progressive thresholds to try
+        collection = None
         
-        # Handle empty collection
-        collection_size_val = collection_size.getInfo() if hasattr(collection_size, 'getInfo') else collection_size
-        if collection_size_val == 0:
+        for threshold in cloud_thresholds:
+            # Get Sentinel-2 collection with cloud filtering
+            collection = (
+                ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+                .filterBounds(polygon)
+                .filterDate(start, end)
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold))
+            )
+            
+            # Check if we found any images
+            collection_size = collection.size().getInfo()
+            if collection_size > 0:
+                print(f"Found {collection_size} images with cloud threshold {threshold}%")
+                break
+        
+        # Handle empty collection after all attempts
+        collection_size = collection.size().getInfo() if collection else 0
+        if collection_size == 0:
             return jsonify({
                 "success": False, 
                 "error": "No Sentinel-2 imagery found for the specified date range and location",
                 "empty_collection": True
             }), 404
         
-        # Create polygon geometry
-        polygon = ee.Geometry.Polygon(coords)
-        
-        # OPTIMIZED: Single server-side batch processing for all images
-        def process_image_batch(image):
-            """Optimized batch processing of images on server-side"""
+        # OPTIMIZED: Use collection.map() to process all images on server side
+        def process_image(image):
+            """Process each image to extract NDVI, date, and cloud percentage"""
+            # Clip to polygon
             clipped = image.clip(polygon)
+            
+            # Calculate NDVI
             ndvi = clipped.normalizedDifference(["B8", "B4"])
             
-            # Calculate mean NDVI for the polygon with optimized reducer
+            # Calculate mean NDVI for the polygon
             ndvi_mean = ndvi.reduceRegion(
                 reducer=ee.Reducer.mean(),
                 geometry=polygon,
-                scale=20,  # Increased scale for faster processing
-                maxPixels=1e8,  # Reduced maxPixels for faster processing
-                bestEffort=True  # Allow best effort processing
+                scale=10,
+                maxPixels=1e9
             ).get('nd')
             
+            # Create feature with all required data
             return ee.Feature(None, {
                 'date': image.date().format('YYYY-MM-dd'),
                 'ndvi': ndvi_mean,
                 'cloud_percentage': image.get('CLOUDY_PIXEL_PERCENTAGE')
             })
         
-        # OPTIMIZED: Process entire collection in single server-side operation
-        processed_collection = collection.map(process_image_batch)
+        # Map the processing function over the entire collection
+        processed_collection = collection.map(process_image)
+        
+        # Convert to FeatureCollection and get all data in a single call
         feature_collection = ee.FeatureCollection(processed_collection)
         
         # Single .getInfo() call to get all time series data
-        features_data = feature_collection.getInfo()
-        features = features_data['features']
+        features = feature_collection.getInfo()['features']
         
-        # OPTIMIZED: Extract NDVI time series data with list comprehension
-        ndvi_time_series = [
-            {
-                "date": feature['properties']['date'],
-                "ndvi": feature['properties']['ndvi'],
-                "cloud_percentage": feature['properties']['cloud_percentage']
-            }
-            for feature in features 
-            if feature['properties'].get('ndvi') is not None
-        ]
+        # Extract NDVI time series data
+        ndvi_time_series = []
+        
+        for feature in features:
+            properties = feature['properties']
+            ndvi_value = properties.get('ndvi')
+            
+            # Only add valid NDVI readings
+            if ndvi_value is not None:
+                ndvi_time_series.append({
+                    "date": properties['date'],
+                    "ndvi": ndvi_value,
+                    "cloud_percentage": properties['cloud_percentage']
+                })
         
         # Verify we have sufficient data points
         if len(ndvi_time_series) == 0:
@@ -1096,14 +1093,14 @@ def generate_ndvi_timeseries():
                 "empty_time_series": True
             }), 404
         
-        # Sort time series by date (optimized)
+        # Sort time series by date
         ndvi_time_series.sort(key=lambda x: x["date"])
         
         # Return response with time series data
         response = {
             "success": True,
             "time_series": ndvi_time_series,
-            "collection_size": collection_size_val
+            "collection_size": collection_size
         }
         
         print(f"Successfully processed NDVI time series request. {len(ndvi_time_series)} data points returned.")
