@@ -880,8 +880,8 @@ def generate_ndvi():
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
         rgb = image.select(["B4", "B3", "B2"])
         
-        # Visualization settings
-        ndvi_vis = ndvi.visualize(min=0, max=1, palette=["red", "yellow", "green"])
+        # Visualization settings - Blue for water (negative NDVI), red for bare soil, yellow-green for vegetation
+        ndvi_vis = ndvi.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
         rgb_vis = rgb.visualize(min=0, max=3000)
         
         # OPTIMIZED: Combine all metadata extraction into a single operation
