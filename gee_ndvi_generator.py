@@ -473,8 +473,19 @@ def generate_agronomic_report():
         # Step 3: Combine primary and secondary analysis for final message
         planting_window_text = primary_results["message"]
         
-        # Add tillage information if detected
-        if tillage_results["tillage_detected"]:
+        # CRITICAL: For no planting detected, ensure the message is clear and direct
+        if primary_results.get("no_planting_detected"):
+            # Override with simpler message for no planting cases
+            if ndvi_data:
+                sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+                start_date = format_date_for_display(sorted_ndvi[0]['date'])
+                end_date = format_date_for_display(sorted_ndvi[-1]['date'])
+                planting_window_text = f"No planting activity detected from {start_date} to {end_date}."
+            else:
+                planting_window_text = "No planting activity detected during the analysis period."
+        
+        # Add tillage information if detected (only for planted fields)
+        elif tillage_results["tillage_detected"]:
             planting_window_text += " " + tillage_results["message"]
         
         # Determine overall confidence
@@ -519,7 +530,20 @@ This is ADDITIONAL context, not the primary planting date.
 """
         
         # Create simple, direct prompt for paying customers
-        prompt = f"""Analyze this field data and provide a clear, professional assessment:
+        if primary_results.get("no_planting_detected"):
+            # For no planting detected - be very direct
+            prompt = f"""Field Analysis:
+Crop: {crop} (Rainfed)
+Period: {date_range}
+Finding: {planting_window_text}
+
+Write exactly this message but in professional language:
+"No planting activity was detected during this period. [Add one specific recommendation for this unplanted rainfed soybean field]"
+
+Keep it simple and actionable."""
+        else:
+            # For normal planting detection
+            prompt = f"""Analyze this field data and provide a clear, professional assessment:
 
 Field: {crop} ({variety}) - {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
 Period: {date_range}
