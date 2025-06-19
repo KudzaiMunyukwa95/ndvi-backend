@@ -490,7 +490,20 @@ def generate_agronomic_report():
                 print(f"Boosted confidence to high based on data quality")
         
         # Create instructions for AI prompt
-        primary_instruction = f"""
+        no_planting_instruction = ""
+        if primary_results.get("no_planting_detected"):
+            no_planting_instruction = f"""
+CRITICAL: NO PLANTING DETECTED ANALYSIS:
+{planting_window_text}
+
+YOU MUST state confidently that NO PLANTING ACTIVITY was detected during this period.
+DO NOT use uncertain language like "unclear" or "uncertain".
+PROVIDE specific actionable recommendations for this unplanted field.
+"""
+        
+        primary_instruction = ""
+        if not primary_results.get("no_planting_detected"):
+            primary_instruction = f"""
 IMPORTANT: PRIMARY PLANTING DATE ANALYSIS:
 {planting_window_text}
 
@@ -505,30 +518,68 @@ SECONDARY INFORMATION: A tillage/replanting event was also detected around {form
 This is ADDITIONAL context, not the primary planting date.
 """
         
-        # Create optimized prompt
-        prompt = f"""You are Yieldera's agronomic AI. Generate concise crop insight based on NDVI trends, {'rainfall, ' if irrigated == 'No' else ''}temperature, and GDD data.
+        # Create optimized prompt with confident language and actionable insights
+        confidence_instruction = """
+IMPORTANT: USE CONFIDENT, DEFINITIVE LANGUAGE. Customers are paying for expert analysis.
+- Never say "appears", "seems", "unclear", "uncertain", or "I recommend monitoring"
+- State findings definitively: "The field shows...", "NDVI data confirms...", "Temperature conditions indicate..."
+- Provide SPECIFIC, ACTIONABLE agronomic recommendations with clear next steps
+"""
+        
+        actionable_recommendations = ""
+        if primary_results.get("no_planting_detected"):
+            if irrigated == "No":
+                actionable_recommendations = """
+PROVIDE these specific recommendations for this unplanted rainfed field:
+1. Optimal planting windows based on seasonal rainfall patterns
+2. Soil preparation requirements before next planting opportunity  
+3. Crop varieties suitable for remaining growing season
+4. Risk assessment for delayed planting timing
+"""
+            else:
+                actionable_recommendations = """
+PROVIDE these specific recommendations for this unplanted irrigated field:
+1. Immediate planting opportunities available with irrigation
+2. Crop selection for current seasonal conditions
+3. Soil preparation steps required before planting
+4. Yield potential for late-season planting
+"""
+        else:
+            actionable_recommendations = """
+PROVIDE specific agronomic insights:
+1. Growth stage assessment and expected development timeline
+2. Critical management practices for current growth phase
+3. Yield optimization strategies for this growth stage
+4. Risk factors to monitor in coming weeks
+"""
+        
+        prompt = f"""You are Yieldera's senior agronomic advisor. Provide definitive crop analysis based on satellite data and weather patterns.
 
+{confidence_instruction}
+{no_planting_instruction}
 {primary_instruction}
 {tillage_instruction}
 
-📊 Data:
+📊 Field Data:
 - Crop: {crop} ({variety}) - {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
 - Location: {latitude}, {longitude}
-- NDVI: {ndvi_formatted}
-- NDVI Changes: {ndvi_change_formatted}
-{'' if irrigated == 'Yes' else f'- Rainfall: {rainfall_formatted}'}
+- NDVI Pattern: {ndvi_formatted}
+- NDVI Dynamics: {ndvi_change_formatted}
+{'' if irrigated == 'Yes' else f'- Rainfall Events: {rainfall_formatted}'}
 - Temperature: {temp_formatted}
-- GDD: {gdd_formatted}
-- Period: {date_range}
+- Growing Degree Days: {gdd_formatted}
+- Analysis Period: {date_range}
 
-🎯 Required:
-1. NDVI Pattern (focus on primary emergence, mention tillage as secondary)
-2. Temperature/GDD implications
-3. {'Rainfall response' if irrigated == 'No' else 'Irrigation management'}
-4. Crop status & exact planting statement above
-5. Confidence (High/Medium/Low)
+🎯 Required Analysis:
+1. DEFINITIVE NDVI interpretation (no uncertain language)
+2. Temperature/GDD impact on crop development
+3. {'Rainfall timing analysis' if irrigated == 'No' else 'Irrigation optimization'}
+4. Current field status with exact planting statement
+5. Confidence level (High/Medium)
 
-Respond in 2-3 sentences as field advisor. Lead with the primary planting analysis."""
+{actionable_recommendations}
+
+Respond as expert field advisor with confidence and specific actionable guidance."""
 
         # Call OpenAI API
         try:
@@ -537,11 +588,11 @@ Respond in 2-3 sentences as field advisor. Lead with the primary planting analys
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are Yieldera's agricultural advisor. Focus on PRIMARY planting date estimation first, then mention any secondary events. DO NOT mention AI, GPT, or any third-party tools."},
+                    {"role": "system", "content": "You are Yieldera's senior agronomic advisor with 20+ years field experience. Provide confident, definitive analysis with specific actionable recommendations. Never use uncertain language - customers pay for expert insights, not uncertainty."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=250
+                temperature=0.2,  # Lower for more consistent, confident responses
+                max_tokens=300    # Increased for detailed actionable insights
             )
             
             insight = response.choices[0].message.content.strip()
