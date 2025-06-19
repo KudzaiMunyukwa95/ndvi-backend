@@ -518,68 +518,25 @@ SECONDARY INFORMATION: A tillage/replanting event was also detected around {form
 This is ADDITIONAL context, not the primary planting date.
 """
         
-        # Create optimized prompt with confident language and actionable insights
-        confidence_instruction = """
-IMPORTANT: USE CONFIDENT, DEFINITIVE LANGUAGE. Customers are paying for expert analysis.
-- Never say "appears", "seems", "unclear", "uncertain", or "I recommend monitoring"
-- State findings definitively: "The field shows...", "NDVI data confirms...", "Temperature conditions indicate..."
-- Provide SPECIFIC, ACTIONABLE agronomic recommendations with clear next steps
-"""
-        
-        actionable_recommendations = ""
-        if primary_results.get("no_planting_detected"):
-            if irrigated == "No":
-                actionable_recommendations = """
-PROVIDE these specific recommendations for this unplanted rainfed field:
-1. Optimal planting windows based on seasonal rainfall patterns
-2. Soil preparation requirements before next planting opportunity  
-3. Crop varieties suitable for remaining growing season
-4. Risk assessment for delayed planting timing
-"""
-            else:
-                actionable_recommendations = """
-PROVIDE these specific recommendations for this unplanted irrigated field:
-1. Immediate planting opportunities available with irrigation
-2. Crop selection for current seasonal conditions
-3. Soil preparation steps required before planting
-4. Yield potential for late-season planting
-"""
-        else:
-            actionable_recommendations = """
-PROVIDE specific agronomic insights:
-1. Growth stage assessment and expected development timeline
-2. Critical management practices for current growth phase
-3. Yield optimization strategies for this growth stage
-4. Risk factors to monitor in coming weeks
-"""
-        
-        prompt = f"""You are Yieldera's senior agronomic advisor. Provide definitive crop analysis based on satellite data and weather patterns.
+        # Create simple, direct prompt for paying customers
+        prompt = f"""Analyze this field data and provide a clear, professional assessment:
 
-{confidence_instruction}
-{no_planting_instruction}
-{primary_instruction}
-{tillage_instruction}
+Field: {crop} ({variety}) - {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
+Period: {date_range}
+NDVI Pattern: {ndvi_formatted}
+{'' if irrigated == 'Yes' else f'Rainfall: {rainfall_formatted}'}
+Temperature: {temp_formatted}
 
-📊 Field Data:
-- Crop: {crop} ({variety}) - {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
-- Location: {latitude}, {longitude}
-- NDVI Pattern: {ndvi_formatted}
-- NDVI Dynamics: {ndvi_change_formatted}
-{'' if irrigated == 'Yes' else f'- Rainfall Events: {rainfall_formatted}'}
-- Temperature: {temp_formatted}
-- Growing Degree Days: {gdd_formatted}
-- Analysis Period: {date_range}
+EXACT PLANTING STATUS:
+{planting_window_text}
 
-🎯 Required Analysis:
-1. DEFINITIVE NDVI interpretation (no uncertain language)
-2. Temperature/GDD impact on crop development
-3. {'Rainfall timing analysis' if irrigated == 'No' else 'Irrigation optimization'}
-4. Current field status with exact planting statement
-5. Confidence level (High/Medium)
-
-{actionable_recommendations}
-
-Respond as expert field advisor with confidence and specific actionable guidance."""
+Instructions:
+- Write 2-3 clear sentences maximum
+- Start with the planting status finding
+- Add ONE specific recommendation
+- Use simple, professional language
+- No technical jargon or complex terms
+- Be definitive, not uncertain"""
 
         # Call OpenAI API
         try:
@@ -588,11 +545,11 @@ Respond as expert field advisor with confidence and specific actionable guidance
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are Yieldera's senior agronomic advisor with 20+ years field experience. Provide confident, definitive analysis with specific actionable recommendations. Never use uncertain language - customers pay for expert insights, not uncertainty."},
+                    {"role": "system", "content": "You are a farm advisor. Give clear, simple advice in 2-3 sentences. No jargon, no formatting, just plain professional language."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.2,  # Lower for more consistent, confident responses
-                max_tokens=300    # Increased for detailed actionable insights
+                temperature=0.1,  # Very low for consistent, simple responses
+                max_tokens=150    # Short, focused responses
             )
             
             insight = response.choices[0].message.content.strip()
