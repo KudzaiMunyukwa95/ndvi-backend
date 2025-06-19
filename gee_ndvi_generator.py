@@ -97,7 +97,7 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
                 "primary_emergence": False
             }
     
-    # If still no emergence detected, check for rainfall without emergence (rainfed only)
+    # FIXED: If still no emergence detected, this is clearly "no planting detected"
     if not emergence_date:
         if irrigated == "No" and rainfall_data:
             rainfall_failure = detect_rainfall_without_emergence(ndvi_data, rainfall_data)
@@ -107,21 +107,31 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
                     "plantingWindowStart": None,
                     "plantingWindowEnd": None,
                     "preEstablished": False,
-                    "confidence": "low",
+                    "confidence": "medium",
                     "message": rainfall_failure['message'],
                     "rainfall_without_emergence": True,
                     "rainfall_date": rainfall_failure['rainfall_date'],
-                    "primary_emergence": False
+                    "primary_emergence": False,
+                    "no_planting_detected": True
                 }
         
+        # FIXED: Clear "no planting detected" case with high confidence
+        if sorted_ndvi:
+            start_date = format_date_for_display(sorted_ndvi[0]['date'])
+            end_date = format_date_for_display(sorted_ndvi[-1]['date'])
+            message = f"No planting activity detected from {start_date} to {end_date}."
+        else:
+            message = "No planting activity detected during the analysis period."
+            
         return {
             "emergenceDate": None,
             "plantingWindowStart": None,
             "plantingWindowEnd": None,
             "preEstablished": False,
-            "confidence": "low",
-            "message": "No clear emergence pattern detected in NDVI data.",
-            "primary_emergence": False
+            "confidence": "high",  # High confidence that no planting occurred
+            "message": message,
+            "primary_emergence": False,
+            "no_planting_detected": True
         }
     
     # Calculate planting window based on crop-specific emergence timing
@@ -473,19 +483,8 @@ def generate_agronomic_report():
         # Step 3: Combine primary and secondary analysis for final message
         planting_window_text = primary_results["message"]
         
-        # CRITICAL: For no planting detected, ensure the message is clear and direct
-        if primary_results.get("no_planting_detected"):
-            # Override with simpler message for no planting cases
-            if ndvi_data:
-                sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
-                start_date = format_date_for_display(sorted_ndvi[0]['date'])
-                end_date = format_date_for_display(sorted_ndvi[-1]['date'])
-                planting_window_text = f"No planting activity detected from {start_date} to {end_date}."
-            else:
-                planting_window_text = "No planting activity detected during the analysis period."
-        
         # Add tillage information if detected (only for planted fields)
-        elif tillage_results["tillage_detected"]:
+        if not primary_results.get("no_planting_detected") and tillage_results["tillage_detected"]:
             planting_window_text += " " + tillage_results["message"]
         
         # Determine overall confidence
@@ -500,67 +499,37 @@ def generate_agronomic_report():
                 confidence_level = "high"
                 print(f"Boosted confidence to high based on data quality")
         
-        # Create instructions for AI prompt
-        no_planting_instruction = ""
+        # FIXED: Create appropriate prompts based on planting detection
         if primary_results.get("no_planting_detected"):
-            no_planting_instruction = f"""
-CRITICAL: NO PLANTING DETECTED ANALYSIS:
-{planting_window_text}
-
-YOU MUST state confidently that NO PLANTING ACTIVITY was detected during this period.
-DO NOT use uncertain language like "unclear" or "uncertain".
-PROVIDE specific actionable recommendations for this unplanted field.
-"""
-        
-        primary_instruction = ""
-        if not primary_results.get("no_planting_detected"):
-            primary_instruction = f"""
-IMPORTANT: PRIMARY PLANTING DATE ANALYSIS:
-{planting_window_text}
-
-YOU MUST USE THIS EXACT PLANTING ANALYSIS as the foundation of your response.
-DO NOT modify it, rephrase it, or use different dates for the primary planting window.
-"""
-        
-        tillage_instruction = ""
-        if tillage_results["tillage_detected"]:
-            tillage_instruction = f"""
-SECONDARY INFORMATION: A tillage/replanting event was also detected around {format_date_for_display(tillage_results['tillage_date'])}.
-This is ADDITIONAL context, not the primary planting date.
-"""
-        
-        # Create simple, direct prompt for paying customers
-        if primary_results.get("no_planting_detected"):
-            # For no planting detected - be very direct
-            prompt = f"""Field Analysis:
-Crop: {crop} (Rainfed)
-Period: {date_range}
+            # For no planting detected - be very direct and clear
+            prompt = f"""Field Analysis Summary:
+Field: {field_name} - {crop} ({'Irrigated' if irrigated == 'Yes' else 'Rainfed'})
+Analysis Period: {date_range}
 Finding: {planting_window_text}
 
-Write exactly this message but in professional language:
-"No planting activity was detected during this period. [Add one specific recommendation for this unplanted rainfed soybean field]"
+Instructions: Write a clear, professional response (2-3 sentences maximum) that:
+1. States definitively that NO PLANTING was detected during this period
+2. Provides ONE specific actionable recommendation for this unplanted field
+3. Uses simple, direct language - no uncertainty or NDVI technical details
 
-Keep it simple and actionable."""
+Example format: "No planting activity was detected during this period. [Specific recommendation for the unplanted field]."
+"""
         else:
             # For normal planting detection
-            prompt = f"""Analyze this field data and provide a clear, professional assessment:
+            prompt = f"""Field Analysis Summary:
+Field: {field_name} - {crop} ({'Irrigated' if irrigated == 'Yes' else 'Rainfed'})
+Analysis Period: {date_range}
+Planting Status: {planting_window_text}
+NDVI Pattern: {ndvi_formatted[:200]}...
+{'' if irrigated == 'Yes' else f'Rainfall: {rainfall_formatted[:100]}...'}
 
-Field: {crop} ({variety}) - {'Irrigated' if irrigated == 'Yes' else 'Rainfed'}
-Period: {date_range}
-NDVI Pattern: {ndvi_formatted}
-{'' if irrigated == 'Yes' else f'Rainfall: {rainfall_formatted}'}
-Temperature: {temp_formatted}
+Instructions: Write a clear, professional assessment (2-3 sentences maximum) that:
+1. Confirms the planting timeline found
+2. Adds ONE specific farming recommendation
+3. Uses simple, professional language - no technical jargon
+4. Be definitive, not uncertain
 
-EXACT PLANTING STATUS:
-{planting_window_text}
-
-Instructions:
-- Write 2-3 clear sentences maximum
-- Start with the planting status finding
-- Add ONE specific recommendation
-- Use simple, professional language
-- No technical jargon or complex terms
-- Be definitive, not uncertain"""
+Keep it simple and actionable for farmers."""
 
         # Call OpenAI API
         try:
@@ -599,7 +568,8 @@ Instructions:
                     "message": primary_results.get("message"),
                     "formatted_planting_window": planting_window_text,
                     "rainfall_without_emergence": primary_results.get("rainfall_without_emergence", False),
-                    "primary_emergence": primary_results.get("primary_emergence", False)
+                    "primary_emergence": primary_results.get("primary_emergence", False),
+                    "no_planting_detected": primary_results.get("no_planting_detected", False)
                 }
                 
                 # Add tillage information if detected
