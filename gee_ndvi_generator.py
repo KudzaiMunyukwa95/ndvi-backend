@@ -35,9 +35,134 @@ EMERGENCE_THRESHOLD = 0.2
 DEFAULT_EMERGENCE_WINDOW = (5, 10)  # Default for unknown crops
 SIGNIFICANT_RAINFALL = 10  # mm, threshold for significant rainfall
 
+# Global variable to track GEE initialization
+gee_initialization_time = None
+
+def initialize_gee():
+    """Initialize Google Earth Engine with error handling"""
+    global gee_initialization_time
+    
+    if not ee.data._initialized:
+        try:
+            print("Initializing Google Earth Engine...")
+            start_time = datetime.now()
+            
+            # Load service account info from environment variable
+            service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
+            
+            # Initialize Earth Engine using service account credentials
+            credentials = ee.ServiceAccountCredentials(
+                email=service_account_info["client_email"],
+                key_data=json.dumps(service_account_info)
+            )
+            ee.Initialize(credentials)
+            
+            # Test the connection
+            test_image = ee.Image("COPERNICUS/S2_HARMONIZED").first()
+            test_info = test_image.getInfo()
+            
+            gee_initialization_time = datetime.now()
+            init_duration = (gee_initialization_time - start_time).total_seconds()
+            print(f"GEE initialized successfully in {init_duration:.2f} seconds")
+            
+            return True, f"GEE initialized in {init_duration:.2f}s"
+            
+        except Exception as e:
+            print(f"GEE initialization error: {str(e)}")
+            return False, f"GEE initialization failed: {str(e)}"
+    else:
+        return True, "GEE already initialized"
+
 @app.route("/")
 def index():
     return "NDVI & RGB backend is live!"
+
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Health check endpoint that warms up the service"""
+    try:
+        # Initialize GEE and warm up the connection
+        success, message = initialize_gee()
+        
+        if not success:
+            return jsonify({
+                "success": False, 
+                "message": message,
+                "timestamp": datetime.now().isoformat(),
+                "gee_initialized": False
+            }), 500
+        
+        return jsonify({
+            "success": True, 
+            "message": f"Backend is healthy and warmed up. {message}",
+            "timestamp": datetime.now().isoformat(),
+            "gee_initialized": True,
+            "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False, 
+            "message": f"Health check failed: {str(e)}",
+            "timestamp": datetime.now().isoformat(),
+            "gee_initialized": False
+        }), 500
+
+@app.route("/api/ping", methods=["GET"])
+def ping():
+    """Simple ping endpoint for basic connectivity"""
+    return jsonify({
+        "success": True,
+        "message": "Pong",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route("/api/warmup", methods=["POST"])
+def warmup():
+    """Dedicated warmup endpoint for cold start mitigation"""
+    try:
+        # Initialize GEE
+        success, init_message = initialize_gee()
+        
+        if not success:
+            return jsonify({
+                "success": False,
+                "message": init_message,
+                "timestamp": datetime.now().isoformat()
+            }), 500
+        
+        # Test a simple Sentinel-2 operation to fully warm up
+        print("Warming up with test Sentinel-2 query...")
+        start_time = datetime.now()
+        
+        # Simple test query
+        test_collection = (
+            ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+            .filterDate("2023-01-01", "2023-01-02")
+            .first()
+        )
+        
+        # Force execution to warm up the pipeline
+        test_info = test_collection.getInfo()
+        
+        warmup_duration = (datetime.now() - start_time).total_seconds()
+        print(f"Warmup completed in {warmup_duration:.2f} seconds")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Backend warmed up successfully. {init_message}",
+            "warmup_duration_seconds": warmup_duration,
+            "timestamp": datetime.now().isoformat(),
+            "gee_initialized": True
+        })
+        
+    except Exception as e:
+        print(f"Warmup error: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": f"Warmup failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 # PRIMARY FUNCTION: Detect initial emergence and estimate planting window
 def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainfall_data=None):
@@ -362,6 +487,14 @@ def format_date_for_display(date_str):
 @app.route("/api/agronomic_insight", methods=["POST"])
 def generate_agronomic_report():
     try:
+        # Ensure GEE is initialized
+        success, message = initialize_gee()
+        if not success:
+            return jsonify({
+                "success": False,
+                "error": f"GEE initialization failed: {message}"
+            }), 500
+        
         # Parse request data
         data = request.get_json()
         
@@ -613,24 +746,14 @@ def calculate_std_dev(values):
 @app.route("/api/gee_ndvi", methods=["POST"])
 def generate_ndvi():
     try:
-        # Initialize GEE with service account if not already initialized
-        if not ee.data._initialized:
-            try:
-                # Load service account info from environment variable
-                service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
-                
-                # Initialize Earth Engine using service account credentials
-                credentials = ee.ServiceAccountCredentials(
-                    email=service_account_info["client_email"],
-                    key_data=json.dumps(service_account_info)
-                )
-                ee.Initialize(credentials)
-            except Exception as e:
-                return jsonify({
-                    "success": False, 
-                    "error": f"GEE initialization error: {str(e)}",
-                    "details": traceback.format_exc()
-                }), 500
+        # Ensure GEE is initialized first
+        success, message = initialize_gee()
+        if not success:
+            return jsonify({
+                "success": False, 
+                "error": f"GEE initialization error: {message}",
+                "details": "Please try again or contact support if the issue persists."
+            }), 500
         
         # Parse request data
         data = request.get_json()
@@ -781,24 +904,14 @@ def generate_ndvi():
 @app.route("/api/gee_ndvi_timeseries", methods=["POST"])
 def generate_ndvi_timeseries():
     try:
-        # Initialize GEE with service account if not already initialized
-        if not ee.data._initialized:
-            try:
-                # Load service account info from environment variable
-                service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
-                
-                # Initialize Earth Engine using service account credentials
-                credentials = ee.ServiceAccountCredentials(
-                    email=service_account_info["client_email"],
-                    key_data=json.dumps(service_account_info)
-                )
-                ee.Initialize(credentials)
-            except Exception as e:
-                return jsonify({
-                    "success": False, 
-                    "error": f"GEE initialization error: {str(e)}",
-                    "details": traceback.format_exc()
-                }), 500
+        # Ensure GEE is initialized first
+        success, message = initialize_gee()
+        if not success:
+            return jsonify({
+                "success": False, 
+                "error": f"GEE initialization error: {message}",
+                "details": "Please try again or contact support if the issue persists."
+            }), 500
         
         # Parse request data
         data = request.get_json()
