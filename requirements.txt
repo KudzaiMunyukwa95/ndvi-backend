@@ -1,5 +1,7 @@
 Flask
 flask-cors
+flask-compress
 earthengine-api
 openai>=1.0.0
 python-dotenv
+cachetools
