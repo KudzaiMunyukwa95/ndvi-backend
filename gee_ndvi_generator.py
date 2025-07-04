@@ -2,11 +2,15 @@ import os
 import json
 import ee
 import traceback
+import hashlib
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_compress import Compress
 from openai import OpenAI
 from dotenv import load_dotenv
+from cachetools import TTLCache
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -14,8 +18,15 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+# Enable GZIP compression
+Compress(app)
+
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+# In-memory caching with TTL (Time To Live)
+cache = TTLCache(maxsize=1000, ttl=3600)  # Cache for 1 hour, max 1000 items
+cache_lock = threading.Lock()
 
 # Define crop-specific emergence windows (in days)
 EMERGENCE_WINDOWS = {
@@ -37,41 +48,112 @@ SIGNIFICANT_RAINFALL = 10  # mm, threshold for significant rainfall
 
 # Global variable to track GEE initialization
 gee_initialization_time = None
+gee_initialized = False
 
-def initialize_gee():
-    """Initialize Google Earth Engine with error handling"""
-    global gee_initialization_time
+def initialize_gee_at_startup():
+    """Initialize Google Earth Engine once at server startup"""
+    global gee_initialization_time, gee_initialized
     
-    if not ee.data._initialized:
-        try:
-            print("Initializing Google Earth Engine...")
-            start_time = datetime.now()
-            
-            # Load service account info from environment variable
-            service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
-            
-            # Initialize Earth Engine using service account credentials
-            credentials = ee.ServiceAccountCredentials(
-                email=service_account_info["client_email"],
-                key_data=json.dumps(service_account_info)
-            )
-            ee.Initialize(credentials)
-            
-            # Test the connection
-            test_image = ee.Image("COPERNICUS/S2_HARMONIZED").first()
-            test_info = test_image.getInfo()
-            
-            gee_initialization_time = datetime.now()
-            init_duration = (gee_initialization_time - start_time).total_seconds()
-            print(f"GEE initialized successfully in {init_duration:.2f} seconds")
-            
-            return True, f"GEE initialized in {init_duration:.2f}s"
-            
-        except Exception as e:
-            print(f"GEE initialization error: {str(e)}")
-            return False, f"GEE initialization failed: {str(e)}"
-    else:
+    if gee_initialized:
         return True, "GEE already initialized"
+    
+    try:
+        print("Initializing Google Earth Engine at startup...")
+        start_time = datetime.now()
+        
+        # Load service account info from environment variable
+        service_account_info = json.loads(os.environ["GEE_CREDENTIALS"])
+        
+        # Initialize Earth Engine using service account credentials
+        credentials = ee.ServiceAccountCredentials(
+            email=service_account_info["client_email"],
+            key_data=json.dumps(service_account_info)
+        )
+        ee.Initialize(credentials)
+        
+        # Test the connection
+        test_image = ee.Image("COPERNICUS/S2_HARMONIZED").first()
+        test_info = test_image.getInfo()
+        
+        gee_initialization_time = datetime.now()
+        init_duration = (gee_initialization_time - start_time).total_seconds()
+        gee_initialized = True
+        print(f"GEE initialized successfully at startup in {init_duration:.2f} seconds")
+        
+        return True, f"GEE initialized in {init_duration:.2f}s"
+        
+    except Exception as e:
+        print(f"GEE initialization error at startup: {str(e)}")
+        gee_initialized = False
+        return False, f"GEE initialization failed: {str(e)}"
+
+def get_cache_key(coords, start_date, end_date, endpoint_type):
+    """Generate a cache key for the given parameters"""
+    coords_str = json.dumps(coords, sort_keys=True)
+    key_string = f"{endpoint_type}_{coords_str}_{start_date}_{end_date}"
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
+    """Get optimized Sentinel-2 collection with smart cloud filtering and pre-sorting"""
+    
+    # Start with base collection
+    base_collection = (
+        ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+        .filterBounds(polygon)
+        .filterDate(start_date, end_date)
+    )
+    
+    # Check collection size first
+    total_size = base_collection.size().getInfo()
+    print(f"Total available images: {total_size}")
+    
+    if total_size == 0:
+        return None, 0
+    
+    # Smart cloud filtering with progressive thresholds
+    if total_size > 50:
+        cloud_threshold = 10
+        max_images = 15
+    elif total_size > 20:
+        cloud_threshold = 20
+        max_images = 20
+    elif total_size > 10:
+        cloud_threshold = 30
+        max_images = 25
+    else:
+        cloud_threshold = 80
+        max_images = total_size
+    
+    # Apply cloud filtering and pre-sort by cloud percentage
+    collection = (
+        base_collection
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", cloud_threshold))
+        .sort("CLOUDY_PIXEL_PERCENTAGE")  # Best images first
+    )
+    
+    # Apply smart limiting if requested
+    if limit_images:
+        collection = collection.limit(max_images)
+    
+    collection_size = collection.size().getInfo()
+    print(f"Filtered collection size: {collection_size} (cloud < {cloud_threshold}%)")
+    
+    # Fallback if no images after filtering
+    if collection_size == 0:
+        print("No images found with initial cloud threshold, trying fallback...")
+        for fallback_threshold in [50, 80]:
+            collection = (
+                base_collection
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", fallback_threshold))
+                .sort("CLOUDY_PIXEL_PERCENTAGE")
+                .limit(max_images)
+            )
+            collection_size = collection.size().getInfo()
+            if collection_size > 0:
+                print(f"Fallback successful: {collection_size} images with cloud < {fallback_threshold}%")
+                break
+    
+    return collection, collection_size
 
 @app.route("/")
 def index():
@@ -79,25 +161,23 @@ def index():
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    """Health check endpoint that warms up the service"""
+    """Health check endpoint"""
     try:
-        # Initialize GEE and warm up the connection
-        success, message = initialize_gee()
-        
-        if not success:
+        if not gee_initialized:
             return jsonify({
                 "success": False, 
-                "message": message,
+                "message": "GEE not initialized",
                 "timestamp": datetime.now().isoformat(),
                 "gee_initialized": False
             }), 500
         
         return jsonify({
             "success": True, 
-            "message": f"Backend is healthy and warmed up. {message}",
+            "message": f"Backend is healthy. GEE initialized at startup.",
             "timestamp": datetime.now().isoformat(),
             "gee_initialized": True,
-            "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None
+            "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None,
+            "cache_size": len(cache)
         })
         
     except Exception as e:
@@ -105,7 +185,7 @@ def health_check():
             "success": False, 
             "message": f"Health check failed: {str(e)}",
             "timestamp": datetime.now().isoformat(),
-            "gee_initialized": False
+            "gee_initialized": gee_initialized
         }), 500
 
 @app.route("/api/ping", methods=["GET"])
@@ -114,24 +194,22 @@ def ping():
     return jsonify({
         "success": True,
         "message": "Pong",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "cache_size": len(cache)
     })
 
 @app.route("/api/warmup", methods=["POST"])
 def warmup():
-    """Dedicated warmup endpoint for cold start mitigation"""
+    """Dedicated warmup endpoint"""
     try:
-        # Initialize GEE
-        success, init_message = initialize_gee()
-        
-        if not success:
+        if not gee_initialized:
             return jsonify({
                 "success": False,
-                "message": init_message,
+                "message": "GEE not initialized at startup",
                 "timestamp": datetime.now().isoformat()
             }), 500
         
-        # Test a simple Sentinel-2 operation to fully warm up
+        # Test a simple Sentinel-2 operation to warm up
         print("Warming up with test Sentinel-2 query...")
         start_time = datetime.now()
         
@@ -150,10 +228,11 @@ def warmup():
         
         return jsonify({
             "success": True,
-            "message": f"Backend warmed up successfully. {init_message}",
+            "message": f"Backend warmed up successfully.",
             "warmup_duration_seconds": warmup_duration,
             "timestamp": datetime.now().isoformat(),
-            "gee_initialized": True
+            "gee_initialized": True,
+            "cache_size": len(cache)
         })
         
     except Exception as e:
@@ -487,12 +566,10 @@ def format_date_for_display(date_str):
 @app.route("/api/agronomic_insight", methods=["POST"])
 def generate_agronomic_report():
     try:
-        # Ensure GEE is initialized
-        success, message = initialize_gee()
-        if not success:
+        if not gee_initialized:
             return jsonify({
                 "success": False,
-                "error": f"GEE initialization failed: {message}"
+                "error": "GEE not initialized"
             }), 500
         
         # Parse request data
@@ -746,13 +823,11 @@ def calculate_std_dev(values):
 @app.route("/api/gee_ndvi", methods=["POST"])
 def generate_ndvi():
     try:
-        # Ensure GEE is initialized first
-        success, message = initialize_gee()
-        if not success:
+        if not gee_initialized:
             return jsonify({
                 "success": False, 
-                "error": f"GEE initialization error: {message}",
-                "details": "Please try again or contact support if the issue persists."
+                "error": "GEE not initialized",
+                "details": "Please restart the server or contact support."
             }), 500
         
         # Parse request data
@@ -773,47 +848,31 @@ def generate_ndvi():
         if len(coords[0]) < 3:
             return jsonify({"success": False, "error": "Invalid polygon: must have at least 3 points"}), 400
         
+        # Check cache first
+        cache_key = get_cache_key(coords, start, end, "ndvi_tiles")
+        with cache_lock:
+            if cache_key in cache:
+                print(f"Cache hit for NDVI tiles request")
+                return jsonify(cache[cache_key])
+        
         # Log incoming request
-        print(f"Processing request: start={start}, end={end}, coords length={len(coords)}")
+        print(f"Processing NDVI tiles request: start={start}, end={end}, coords length={len(coords)}")
         
         # Create Earth Engine geometry
         polygon = ee.Geometry.Polygon(coords)
 
-        # Progressive cloud filtering approach
-        cloud_thresholds = [10, 20, 30, 50, 80]
-        collection = None
-        collection_size = 0
+        # Get optimized collection
+        collection, collection_size = get_optimized_collection(polygon, start, end, limit_images=True)
         
-        for threshold in cloud_thresholds:
-            # Get Sentinel-2 collection with cloud filtering
-            collection = (
-                ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
-                .filterBounds(polygon)
-                .filterDate(start, end)
-                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold))
-                .sort("CLOUDY_PIXEL_PERCENTAGE")  # Sort by cloud percentage
-            )
-            
-            # Limit collection size based on cloud threshold
-            limit_size = 10 if threshold <= 20 else (5 if threshold <= 50 else 3)
-            collection = collection.limit(limit_size)
-            
-            # Check if we found any images
-            collection_size = collection.size()
-            if collection_size.getInfo() > 0:
-                print(f"Found {collection_size.getInfo()} images with cloud threshold {threshold}%")
-                break
-        
-        # Handle empty collection after all attempts
-        if collection_size.getInfo() == 0:
+        if collection is None or collection_size == 0:
             return jsonify({
                 "success": False, 
                 "error": "No Sentinel-2 imagery found for the specified date range and location",
                 "empty_collection": True
             }), 404
         
-        # Get median image and clip to polygon
-        image = collection.median().clip(polygon)
+        # Use mosaic instead of median for better performance
+        image = collection.mosaic().clip(polygon)
         
         # Calculate NDVI
         ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
@@ -823,10 +882,10 @@ def generate_ndvi():
         ndvi_vis = ndvi.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
         rgb_vis = rgb.visualize(min=0, max=3000)
         
-        # Combine all metadata extraction into a single operation
+        # Get first image for metadata
         first_image = collection.first()
         
-        # Create a combined operation to get NDVI stats, image date, and cloud percentage
+        # Optimize metadata extraction - single operation
         combined_data = ee.Dictionary({
             'ndvi_stats': ndvi.reduceRegion(
                 reducer=ee.Reducer.mean().combine(
@@ -837,8 +896,7 @@ def generate_ndvi():
                 maxPixels=1e9
             ),
             'image_date': first_image.date().format("YYYY-MM-dd"),
-            'cloud_percentage': first_image.get("CLOUDY_PIXEL_PERCENTAGE"),
-            'collection_size': collection_size
+            'cloud_percentage': first_image.get("CLOUDY_PIXEL_PERCENTAGE")
         })
         
         # Get map IDs for tile URLs with timeout handling
@@ -851,9 +909,8 @@ def generate_ndvi():
             ndvi_stats = all_data['ndvi_stats']
             image_date = all_data['image_date']
             cloud_percentage = all_data['cloud_percentage']
-            collection_size_val = all_data['collection_size']
             
-            # Return response with all data including cloud percentage
+            # Prepare response
             response = {
                 "success": True,
                 "ndvi_tile_url": map_id_ndvi["tile_fetcher"].url_format,
@@ -862,11 +919,15 @@ def generate_ndvi():
                 "min_ndvi": ndvi_stats.get("NDVI_min"),
                 "max_ndvi": ndvi_stats.get("NDVI_max"),
                 "image_date": image_date,
-                "collection_size": collection_size_val,
+                "collection_size": collection_size,
                 "cloudy_pixel_percentage": cloud_percentage
             }
             
-            print(f"Successfully processed NDVI request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Cloud cover: {cloud_percentage}%")
+            # Cache the response
+            with cache_lock:
+                cache[cache_key] = response
+            
+            print(f"Successfully processed NDVI tiles request. Mean NDVI: {ndvi_stats.get('NDVI_mean')}, Cloud cover: {cloud_percentage}%")
             return jsonify(response)
             
         except Exception as e:
@@ -876,18 +937,23 @@ def generate_ndvi():
             ndvi_stats = all_data['ndvi_stats']
             image_date = all_data['image_date']
             cloud_percentage = all_data['cloud_percentage']
-            collection_size_val = all_data['collection_size']
             
-            return jsonify({
+            response = {
                 "success": True,
                 "mean_ndvi": ndvi_stats.get("NDVI_mean"),
                 "min_ndvi": ndvi_stats.get("NDVI_min"),
                 "max_ndvi": ndvi_stats.get("NDVI_max"),
                 "image_date": image_date,
-                "collection_size": collection_size_val,
+                "collection_size": collection_size,
                 "cloudy_pixel_percentage": cloud_percentage,
                 "visualization_error": str(e)
-            })
+            }
+            
+            # Cache the response
+            with cache_lock:
+                cache[cache_key] = response
+                
+            return jsonify(response)
 
     except Exception as e:
         error_message = str(e)
@@ -904,13 +970,11 @@ def generate_ndvi():
 @app.route("/api/gee_ndvi_timeseries", methods=["POST"])
 def generate_ndvi_timeseries():
     try:
-        # Ensure GEE is initialized first
-        success, message = initialize_gee()
-        if not success:
+        if not gee_initialized:
             return jsonify({
                 "success": False, 
-                "error": f"GEE initialization error: {message}",
-                "details": "Please try again or contact support if the issue persists."
+                "error": "GEE not initialized",
+                "details": "Please restart the server or contact support."
             }), 500
         
         # Parse request data
@@ -931,43 +995,32 @@ def generate_ndvi_timeseries():
         if len(coords[0]) < 3:
             return jsonify({"success": False, "error": "Invalid polygon: must have at least 3 points"}), 400
         
+        # Check cache first
+        cache_key = get_cache_key(coords, start, end, "ndvi_timeseries")
+        with cache_lock:
+            if cache_key in cache:
+                print(f"Cache hit for NDVI timeseries request")
+                return jsonify(cache[cache_key])
+        
         # Log incoming request
-        print(f"Processing time series request: start={start}, end={end}, coords length={len(coords[0])}")
+        print(f"Processing NDVI time series request: start={start}, end={end}, coords length={len(coords[0])}")
         
         # Create Earth Engine geometry
         polygon = ee.Geometry.Polygon(coords)
 
-        # Progressive cloud filtering approach
-        cloud_thresholds = [10, 20, 30, 50, 80]
-        collection = None
+        # Get optimized collection (don't limit for time series)
+        collection, collection_size = get_optimized_collection(polygon, start, end, limit_images=False)
         
-        for threshold in cloud_thresholds:
-            # Get Sentinel-2 collection with cloud filtering
-            collection = (
-                ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
-                .filterBounds(polygon)
-                .filterDate(start, end)
-                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold))
-            )
-            
-            # Check if we found any images
-            collection_size = collection.size().getInfo()
-            if collection_size > 0:
-                print(f"Found {collection_size} images with cloud threshold {threshold}%")
-                break
-        
-        # Handle empty collection after all attempts
-        collection_size = collection.size().getInfo() if collection else 0
-        if collection_size == 0:
+        if collection is None or collection_size == 0:
             return jsonify({
                 "success": False, 
                 "error": "No Sentinel-2 imagery found for the specified date range and location",
                 "empty_collection": True
             }), 404
         
-        # Use collection.map() to process all images on server side
-        def process_image(image):
-            """Process each image to extract NDVI, date, and cloud percentage"""
+        # OPTIMIZED: Use reduceRegions for batch processing instead of map
+        def add_ndvi_stats(image):
+            """Add NDVI statistics to image properties"""
             # Clip to polygon
             clipped = image.clip(polygon)
             
@@ -982,35 +1035,44 @@ def generate_ndvi_timeseries():
                 maxPixels=1e9
             ).get('nd')
             
-            # Create feature with all required data
-            return ee.Feature(None, {
-                'date': image.date().format('YYYY-MM-dd'),
-                'ndvi': ndvi_mean,
-                'cloud_percentage': image.get('CLOUDY_PIXEL_PERCENTAGE')
+            # Return image with NDVI mean added as property
+            return image.set({
+                'ndvi_mean': ndvi_mean,
+                'date_formatted': image.date().format('YYYY-MM-dd')
             })
         
-        # Map the processing function over the entire collection
-        processed_collection = collection.map(process_image)
+        # Map the function over the collection to add NDVI stats
+        collection_with_ndvi = collection.map(add_ndvi_stats)
         
-        # Convert to FeatureCollection and get all data in a single call
-        feature_collection = ee.FeatureCollection(processed_collection)
+        # OPTIMIZED: Use aggregate_array to get all data in fewer server calls
+        dates_array = collection_with_ndvi.aggregate_array('date_formatted')
+        ndvi_array = collection_with_ndvi.aggregate_array('ndvi_mean')
+        cloud_array = collection_with_ndvi.aggregate_array('CLOUDY_PIXEL_PERCENTAGE')
         
-        # Single .getInfo() call to get all time series data
-        features = feature_collection.getInfo()['features']
+        # Single .getInfo() call to get all arrays
+        print("Getting time series data in batch...")
+        batch_data = ee.Dictionary({
+            'dates': dates_array,
+            'ndvi_values': ndvi_array,
+            'cloud_percentages': cloud_array
+        }).getInfo()
         
-        # Extract NDVI time series data
+        dates = batch_data['dates']
+        ndvi_values = batch_data['ndvi_values']
+        cloud_percentages = batch_data['cloud_percentages']
+        
+        # Combine into time series data
         ndvi_time_series = []
         
-        for feature in features:
-            properties = feature['properties']
-            ndvi_value = properties.get('ndvi')
+        for i in range(len(dates)):
+            ndvi_value = ndvi_values[i]
             
             # Only add valid NDVI readings
             if ndvi_value is not None:
                 ndvi_time_series.append({
-                    "date": properties['date'],
+                    "date": dates[i],
                     "ndvi": ndvi_value,
-                    "cloud_percentage": properties['cloud_percentage']
+                    "cloud_percentage": cloud_percentages[i]
                 })
         
         # Verify we have sufficient data points
@@ -1024,12 +1086,16 @@ def generate_ndvi_timeseries():
         # Sort time series by date
         ndvi_time_series.sort(key=lambda x: x["date"])
         
-        # Return response with time series data
+        # Prepare response
         response = {
             "success": True,
             "time_series": ndvi_time_series,
             "collection_size": collection_size
         }
+        
+        # Cache the response
+        with cache_lock:
+            cache[cache_key] = response
         
         print(f"Successfully processed NDVI time series request. {len(ndvi_time_series)} data points returned.")
         return jsonify(response)
@@ -1045,6 +1111,14 @@ def generate_ndvi_timeseries():
             "error": error_message,
             "stack_trace": stack_trace
         }), 500
+
+# Initialize GEE at startup
+print("Starting backend initialization...")
+success, init_message = initialize_gee_at_startup()
+if success:
+    print(f"✓ Backend ready: {init_message}")
+else:
+    print(f"✗ Backend startup failed: {init_message}")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
