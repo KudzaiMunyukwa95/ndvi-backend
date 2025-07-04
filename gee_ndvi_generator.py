@@ -71,9 +71,9 @@ def initialize_gee_at_startup():
         )
         ee.Initialize(credentials)
         
-        # Test the connection
-        test_image = ee.Image("COPERNICUS/S2_HARMONIZED").first()
-        test_info = test_image.getInfo()
+        # Test the connection - FIXED: Use ImageCollection, not Image
+        test_collection = ee.ImageCollection("COPERNICUS/S2_HARMONIZED").first()
+        test_info = test_collection.getInfo()
         
         gee_initialization_time = datetime.now()
         init_duration = (gee_initialization_time - start_time).total_seconds()
