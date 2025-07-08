@@ -36,7 +36,7 @@ EMERGENCE_WINDOWS = {
     "Cotton": (5, 9),
     "Groundnuts": (6, 10),
     "Barley": (7, 11),
-    "Wheat": (7, 11),
+    "Wheat": (1, 5),
     "Millet": (4, 8),
     "Tobacco": (7, 11)  # For nursery emergence
 }
