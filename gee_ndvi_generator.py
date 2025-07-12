@@ -96,44 +96,44 @@ def get_cache_key(coords, start_date, end_date, endpoint_type):
 def calculate_field_cloud_cover(image, polygon):
     """
     Calculate cloud cover percentage specifically for the user's field polygon
-    Uses Sentinel-2 Scene Classification Layer (SCL) for accurate cloud detection
+    Uses available Sentinel-2 cloud detection bands
     """
     try:
         # Clip image to the field boundary
         clipped = image.clip(polygon)
         
-        # Check if SCL band exists (Scene Classification Layer)
-        band_names = image.bandNames()
+        # Get available band names to determine which method to use
+        band_names = image.bandNames().getInfo()
+        print(f"Available bands for cloud detection: {band_names}")
         
-        # Method 1: Using SCL band (Scene Classification Layer) - Most accurate
-        try:
-            scl = clipped.select('SCL')
+        # Method 1: Try MSK_CLASSI_OPAQUE and MSK_CLASSI_CIRRUS (most common in S2_HARMONIZED)
+        if 'MSK_CLASSI_OPAQUE' in band_names and 'MSK_CLASSI_CIRRUS' in band_names:
+            print("Using MSK_CLASSI cloud masks for field-specific calculation")
             
-            # SCL classification values:
-            # 0 = NO_DATA, 1 = SATURATED_OR_DEFECTIVE, 2 = DARK_AREA_PIXELS, 3 = CLOUD_SHADOWS
-            # 4 = VEGETATION, 5 = NOT_VEGETATED, 6 = WATER, 7 = UNCLASSIFIED
-            # 8 = CLOUD_MEDIUM_PROBABILITY, 9 = CLOUD_HIGH_PROBABILITY, 10 = THIN_CIRRUS, 11 = SNOW
+            # Get cloud masks
+            opaque_clouds = clipped.select('MSK_CLASSI_OPAQUE')
+            cirrus_clouds = clipped.select('MSK_CLASSI_CIRRUS')
             
-            # Create cloud mask (include medium clouds, high clouds, and cloud shadows)
-            cloud_mask = scl.eq(8).Or(scl.eq(9)).Or(scl.eq(3)).Or(scl.eq(10))
+            # Combine cloud masks (both are binary: 1 = cloud, 0 = clear)
+            combined_cloud_mask = opaque_clouds.Or(cirrus_clouds)
             
-            # Calculate total valid pixels in the field
-            total_pixels = scl.gte(0).reduceRegion(
+            # Calculate total pixels
+            total_pixels = combined_cloud_mask.reduceRegion(
                 reducer=ee.Reducer.count(),
                 geometry=polygon,
                 scale=20,
                 maxPixels=1e9
-            ).get('SCL')
+            ).get('MSK_CLASSI_OPAQUE')
             
-            # Calculate cloudy pixels in the field
-            cloudy_pixels = cloud_mask.reduceRegion(
+            # Calculate cloudy pixels
+            cloudy_pixels = combined_cloud_mask.reduceRegion(
                 reducer=ee.Reducer.sum(),
                 geometry=polygon,
                 scale=20,
                 maxPixels=1e9
-            ).get('SCL')
+            ).get('MSK_CLASSI_OPAQUE')
             
-            # Calculate percentage (handle division by zero)
+            # Calculate percentage
             field_cloud_percentage = ee.Algorithms.If(
                 ee.Number(total_pixels).gt(0),
                 ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
@@ -142,14 +142,48 @@ def calculate_field_cloud_cover(image, polygon):
             
             return field_cloud_percentage
             
-        except Exception as scl_error:
-            print(f"SCL method failed: {scl_error}, trying QA60 method...")
+        # Method 2: Try SCL band (if available)
+        elif 'SCL' in band_names:
+            print("Using SCL band for field-specific calculation")
             
-            # Method 2: Using QA60 band (backup method)
+            scl = clipped.select('SCL')
+            
+            # SCL classification values:
+            # 8 = CLOUD_MEDIUM_PROBABILITY, 9 = CLOUD_HIGH_PROBABILITY, 3 = CLOUD_SHADOWS, 10 = THIN_CIRRUS
+            cloud_mask = scl.eq(8).Or(scl.eq(9)).Or(scl.eq(3)).Or(scl.eq(10))
+            
+            # Calculate total valid pixels
+            total_pixels = scl.gte(0).reduceRegion(
+                reducer=ee.Reducer.count(),
+                geometry=polygon,
+                scale=20,
+                maxPixels=1e9
+            ).get('SCL')
+            
+            # Calculate cloudy pixels
+            cloudy_pixels = cloud_mask.reduceRegion(
+                reducer=ee.Reducer.sum(),
+                geometry=polygon,
+                scale=20,
+                maxPixels=1e9
+            ).get('SCL')
+            
+            # Calculate percentage
+            field_cloud_percentage = ee.Algorithms.If(
+                ee.Number(total_pixels).gt(0),
+                ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
+                0
+            )
+            
+            return field_cloud_percentage
+            
+        # Method 3: Fallback to QA60 band
+        elif 'QA60' in band_names:
+            print("Using QA60 band for field-specific calculation")
+            
             qa60 = clipped.select('QA60')
             
-            # QA60 cloud detection using bit flags
-            # Bit 10: Cirrus clouds, Bit 11: Clouds
+            # QA60 bit flags: Bit 10 = Cirrus, Bit 11 = Clouds
             cloud_bit_10 = qa60.bitwiseAnd(1 << 10).gt(0)  # Cirrus
             cloud_bit_11 = qa60.bitwiseAnd(1 << 11).gt(0)  # Clouds
             
@@ -181,9 +215,12 @@ def calculate_field_cloud_cover(image, polygon):
             
             return field_cloud_percentage
             
+        else:
+            print(f"No suitable cloud detection bands found in: {band_names}")
+            return None
+            
     except Exception as e:
         print(f"Error calculating field cloud cover: {e}")
-        # Return null if calculation fails
         return None
 
 def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
@@ -976,11 +1013,10 @@ def generate_ndvi():
         ndvi_vis = ndvi.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
         rgb_vis = rgb.visualize(min=0, max=3000)
         
-        # Calculate both scene-level and field-specific cloud cover
+        # Calculate scene-level cloud cover
         scene_cloud_percentage = first_image.get("CLOUDY_PIXEL_PERCENTAGE")
-        field_cloud_percentage = calculate_field_cloud_cover(first_image, polygon)
         
-        # Optimize metadata extraction - single operation
+        # Optimize metadata extraction - single operation (without field cloud cover)
         combined_data = ee.Dictionary({
             'ndvi_stats': ndvi.reduceRegion(
                 reducer=ee.Reducer.mean().combine(
@@ -991,9 +1027,19 @@ def generate_ndvi():
                 maxPixels=1e9
             ),
             'image_date': first_image.date().format("YYYY-MM-dd"),
-            'scene_cloud_percentage': scene_cloud_percentage,
-            'field_cloud_percentage': field_cloud_percentage
+            'scene_cloud_percentage': scene_cloud_percentage
         })
+        
+        # Calculate field-specific cloud cover separately to handle errors gracefully
+        field_cloud_percentage = None
+        try:
+            field_cloud_calculation = calculate_field_cloud_cover(first_image, polygon)
+            if field_cloud_calculation is not None:
+                field_cloud_percentage = field_cloud_calculation.getInfo()
+                print(f"Field-specific cloud cover calculated: {field_cloud_percentage}%")
+        except Exception as e:
+            print(f"Field cloud cover calculation failed, using scene-level: {e}")
+            field_cloud_percentage = None
         
         # Get map IDs for tile URLs with timeout handling
         try:
@@ -1005,7 +1051,6 @@ def generate_ndvi():
             ndvi_stats = all_data['ndvi_stats']
             image_date = all_data['image_date']
             scene_cloud_percentage = all_data['scene_cloud_percentage']
-            field_cloud_percentage = all_data['field_cloud_percentage']
             
             # Use field-specific cloud cover if available, otherwise fall back to scene-level
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_percentage
@@ -1041,7 +1086,6 @@ def generate_ndvi():
             ndvi_stats = all_data['ndvi_stats']
             image_date = all_data['image_date']
             scene_cloud_percentage = all_data['scene_cloud_percentage']
-            field_cloud_percentage = all_data['field_cloud_percentage']
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_percentage
             
@@ -1130,7 +1174,7 @@ def generate_ndvi_timeseries():
         
         # OPTIMIZED: Use reduceRegions for batch processing instead of map
         def add_ndvi_and_cloud_stats(image):
-            """Add NDVI statistics and field-specific cloud cover to image properties"""
+            """Add NDVI statistics to image properties (field cloud cover calculated separately)"""
             # Clip to polygon
             clipped = image.clip(polygon)
             
@@ -1145,24 +1189,14 @@ def generate_ndvi_timeseries():
                 maxPixels=1e9
             ).get('nd')
             
-            # Calculate field-specific cloud cover
-            field_cloud_cover = calculate_field_cloud_cover(image, polygon)
+            # Get scene-level cloud cover
             scene_cloud_cover = image.get("CLOUDY_PIXEL_PERCENTAGE")
             
-            # Use field cloud cover if available, otherwise scene cloud cover
-            display_cloud_cover = ee.Algorithms.If(
-                ee.Algorithms.IsEqual(field_cloud_cover, None),
-                scene_cloud_cover,
-                field_cloud_cover
-            )
-            
-            # Return image with NDVI mean and cloud cover added as properties
+            # Return image with NDVI mean and scene cloud cover
             return image.set({
                 'ndvi_mean': ndvi_mean,
                 'date_formatted': image.date().format('YYYY-MM-dd'),
-                'scene_cloud_percentage': scene_cloud_cover,
-                'field_cloud_percentage': field_cloud_cover,
-                'display_cloud_percentage': display_cloud_cover
+                'scene_cloud_percentage': scene_cloud_cover
             })
         
         # Map the function over the collection to add NDVI and cloud stats
@@ -1172,26 +1206,20 @@ def generate_ndvi_timeseries():
         dates_array = collection_with_stats.aggregate_array('date_formatted')
         ndvi_array = collection_with_stats.aggregate_array('ndvi_mean')
         scene_cloud_array = collection_with_stats.aggregate_array('scene_cloud_percentage')
-        field_cloud_array = collection_with_stats.aggregate_array('field_cloud_percentage')
-        display_cloud_array = collection_with_stats.aggregate_array('display_cloud_percentage')
         
         # Single .getInfo() call to get all arrays
         print("Getting time series data in batch...")
         batch_data = ee.Dictionary({
             'dates': dates_array,
             'ndvi_values': ndvi_array,
-            'scene_cloud_percentages': scene_cloud_array,
-            'field_cloud_percentages': field_cloud_array,
-            'display_cloud_percentages': display_cloud_array
+            'scene_cloud_percentages': scene_cloud_array
         }).getInfo()
         
         dates = batch_data['dates']
         ndvi_values = batch_data['ndvi_values']
         scene_cloud_percentages = batch_data['scene_cloud_percentages']
-        field_cloud_percentages = batch_data['field_cloud_percentages']
-        display_cloud_percentages = batch_data['display_cloud_percentages']
         
-        # Combine into time series data
+        # Combine into time series data with simplified cloud cover
         ndvi_time_series = []
         
         for i in range(len(dates)):
@@ -1199,13 +1227,15 @@ def generate_ndvi_timeseries():
             
             # Only add valid NDVI readings
             if ndvi_value is not None:
+                # For time series, use scene-level cloud cover for performance
+                # Field-specific calculation would be too slow for many images
                 ndvi_time_series.append({
                     "date": dates[i],
                     "ndvi": ndvi_value,
-                    "cloud_percentage": display_cloud_percentages[i],  # Primary display value
-                    "scene_cloud_percentage": scene_cloud_percentages[i],  # Scene-level
-                    "field_cloud_percentage": field_cloud_percentages[i],  # Field-specific
-                    "cloud_calculation_method": "field_specific" if field_cloud_percentages[i] is not None else "scene_level"
+                    "cloud_percentage": scene_cloud_percentages[i],  # Scene-level for performance
+                    "scene_cloud_percentage": scene_cloud_percentages[i],
+                    "field_cloud_percentage": None,  # Not calculated for time series (performance)
+                    "cloud_calculation_method": "scene_level"  # Always scene-level for time series
                 })
         
         # Verify we have sufficient data points
@@ -1231,7 +1261,7 @@ def generate_ndvi_timeseries():
             cache[cache_key] = response
         
         print(f"Successfully processed NDVI time series request. {len(ndvi_time_series)} data points returned.")
-        print(f"Field-specific cloud calculation used for {sum(1 for item in ndvi_time_series if item['cloud_calculation_method'] == 'field_specific')} out of {len(ndvi_time_series)} data points.")
+        print(f"Using scene-level cloud cover for all time series data points for performance.")
         return jsonify(response)
 
     except Exception as e:
