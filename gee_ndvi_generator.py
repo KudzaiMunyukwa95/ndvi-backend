@@ -5,8 +5,6 @@ import traceback
 import hashlib
 import geohash2
 import statistics
-import io
-import base64
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -35,10 +33,6 @@ cache_lock = threading.Lock()
 # Geohash spatial adaptation cache for wheat emergence patterns
 spatial_cache = TTLCache(maxsize=500, ttl=86400)  # 24 hour TTL for spatial patterns
 spatial_cache_lock = threading.Lock()
-
-# PDF image cache for map snapshots
-pdf_image_cache = TTLCache(maxsize=100, ttl=1800)  # 30 minute TTL for PDF images
-pdf_cache_lock = threading.Lock()
 
 # Define crop-specific emergence windows (in days)
 EMERGENCE_WINDOWS = {
@@ -112,206 +106,6 @@ def get_cache_key(coords, start_date, end_date, endpoint_type):
     coords_str = json.dumps(coords, sort_keys=True)
     key_string = f"{endpoint_type}_{coords_str}_{start_date}_{end_date}"
     return hashlib.md5(key_string.encode()).hexdigest()
-
-def get_pdf_cache_key(coords, start_date, end_date, image_type, width, height):
-    """Generate a cache key for PDF image snapshots"""
-    coords_str = json.dumps(coords, sort_keys=True)
-    key_string = f"pdf_{image_type}_{coords_str}_{start_date}_{end_date}_{width}_{height}"
-    return hashlib.md5(key_string.encode()).hexdigest()
-
-def create_polygon_overlay(polygon, width, height, bounds):
-    """
-    Create a polygon overlay for the field boundary.
-    Returns an Earth Engine image with the polygon outlined.
-    """
-    try:
-        # Create a buffer around the polygon for better visibility
-        buffered_polygon = polygon.buffer(10)  # 10 meter buffer
-        
-        # Create an image with the polygon outline
-        outline = ee.Image().paint(polygon, 1, 2).visualize(
-            palette=['#B6BF00'], 
-            opacity=0.8
-        )
-        
-        # Create a semi-transparent fill
-        fill = ee.Image().paint(polygon, 1).visualize(
-            palette=['#B6BF00'], 
-            opacity=0.2
-        )
-        
-        # Combine outline and fill
-        overlay = fill.blend(outline)
-        
-        return overlay
-        
-    except Exception as e:
-        print(f"Error creating polygon overlay: {e}")
-        return None
-
-def add_map_annotations(image, polygon, width, height):
-    """
-    Add scale bar and north arrow annotations to the map image.
-    Returns the annotated image.
-    """
-    try:
-        # Get the bounds of the polygon for scale calculation
-        bounds = polygon.bounds()
-        coords = bounds.coordinates().getInfo()[0]
-        
-        # Calculate approximate scale
-        # This is a simplified scale calculation
-        min_lon = min(coord[0] for coord in coords)
-        max_lon = max(coord[0] for coord in coords)
-        min_lat = min(coord[1] for coord in coords)
-        max_lat = max(coord[1] for coord in coords)
-        
-        # Distance calculation (approximate)
-        import math
-        lat_diff = max_lat - min_lat
-        lon_diff = max_lon - min_lon
-        
-        # Convert to meters (rough approximation)
-        lat_meters = lat_diff * 111000  # 1 degree ≈ 111km
-        lon_meters = lon_diff * 111000 * math.cos(math.radians((max_lat + min_lat) / 2))
-        
-        # Use the smaller dimension for scale reference
-        scale_meters = min(lat_meters, lon_meters)
-        
-        # Create text overlays (simplified - in a real implementation you'd use more sophisticated text rendering)
-        # For now, we'll return the image as-is since EE doesn't have built-in text rendering
-        # The frontend can add these annotations after receiving the image
-        
-        return image
-        
-    except Exception as e:
-        print(f"Error adding map annotations: {e}")
-        return image
-
-def generate_map_snapshot(polygon, start_date, end_date, image_type, width=800, height=600, padding=0.1):
-    """
-    Generate a map snapshot for PDF export.
-    
-    Args:
-        polygon: Earth Engine Polygon geometry
-        start_date: Start date for imagery
-        end_date: End date for imagery  
-        image_type: 'rgb' or 'ndvi'
-        width: Image width in pixels
-        height: Image height in pixels
-        padding: Padding around polygon as fraction of bounds
-    
-    Returns:
-        dict: Contains base64 image data and metadata
-    """
-    try:
-        print(f"Generating {image_type} snapshot: {width}x{height}")
-        
-        # Get optimized collection
-        collection, collection_size = get_optimized_collection(polygon, start_date, end_date, limit_images=True)
-        
-        if collection is None or collection_size == 0:
-            raise Exception("No satellite imagery available for the specified date range")
-        
-        # Create composite image
-        image = collection.mosaic().clip(polygon)
-        first_image = collection.first()
-        
-        # Apply padding to the polygon bounds
-        bounds = polygon.bounds()
-        buffered_bounds = bounds.buffer(
-            ee.Number(bounds.area().sqrt()).multiply(padding)
-        )
-        
-        if image_type == 'rgb':
-            # RGB visualization
-            rgb = image.select(["B4", "B3", "B2"])
-            vis_image = rgb.visualize(min=0, max=3000)
-            
-        elif image_type == 'ndvi':
-            # NDVI visualization
-            ndvi = image.normalizedDifference(["B8", "B4"]).rename("NDVI")
-            vis_image = ndvi.visualize(
-                min=-0.5, 
-                max=1, 
-                palette=["#d73027", "#fc8d59", "#fee08b", "#91cf60", "#1a9850"]
-            )
-        else:
-            raise Exception(f"Invalid image type: {image_type}")
-        
-        # Add polygon overlay
-        polygon_overlay = create_polygon_overlay(polygon, width, height, buffered_bounds)
-        if polygon_overlay:
-            vis_image = vis_image.blend(polygon_overlay)
-        
-        # Add map annotations (scale bar, north arrow)
-        vis_image = add_map_annotations(vis_image, polygon, width, height)
-        
-        # Generate the map image
-        # Use a fixed projection for consistent results
-        projection = ee.Projection('EPSG:3857')  # Web Mercator
-        
-        # Get the image as a download URL
-        download_params = {
-            'image': vis_image,
-            'dimensions': f"{width}x{height}",
-            'region': buffered_bounds,
-            'format': 'png',
-            'crs': projection
-        }
-        
-        # Get download URL
-        download_url = ee.data.makeDownloadUrl(ee.data.getDownloadId(download_params))
-        
-        # In a production environment, you would:
-        # 1. Download the image from the URL
-        # 2. Convert to base64
-        # 3. Return the base64 data
-        
-        # For now, we'll return the download URL and let the client handle it
-        # This is a simplified implementation
-        
-        # Get image metadata
-        image_date = first_image.date().format("YYYY-MM-dd").getInfo()
-        scene_cloud_percentage = first_image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
-        
-        # Calculate bounds info for metadata
-        bounds_coords = bounds.coordinates().getInfo()[0]
-        center_lon = sum(coord[0] for coord in bounds_coords) / len(bounds_coords)
-        center_lat = sum(coord[1] for coord in bounds_coords) / len(bounds_coords)
-        
-        metadata = {
-            'image_type': image_type,
-            'capture_date': image_date,
-            'center_coordinates': {
-                'lat': center_lat,
-                'lng': center_lon
-            },
-            'collection_size': collection_size,
-            'cloud_percentage': scene_cloud_percentage,
-            'dimensions': {
-                'width': width,
-                'height': height
-            }
-        }
-        
-        return {
-            'success': True,
-            'download_url': download_url,
-            'metadata': metadata,
-            'message': f'{image_type.upper()} snapshot generated successfully'
-        }
-        
-    except Exception as e:
-        print(f"Error generating map snapshot: {e}")
-        return {
-            'success': False,
-            'error': str(e),
-            'message': f'Failed to generate {image_type} snapshot'
-        }
-
-# [Previous functions remain the same: smooth_ndvi_series, is_winter_season, get_geohash_key, etc.]
-# ... (keeping all the existing emergence detection functions unchanged)
 
 def smooth_ndvi_series(ndvi_data, window=SMOOTH_WINDOW):
     """Apply 3-point median smoothing to NDVI series"""
@@ -873,7 +667,7 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
 
 @app.route("/")
 def index():
-    return "NDVI & RGB backend with PDF Export Support is live!"
+    return "NDVI & RGB backend with Winter Wheat Fix is live!"
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
@@ -889,15 +683,13 @@ def health_check():
         
         return jsonify({
             "success": True, 
-            "message": f"Backend is healthy. GEE initialized at startup. Winter Wheat Fix enabled. PDF Export ready.",
+            "message": f"Backend is healthy. GEE initialized at startup. Winter Wheat Fix enabled.",
             "timestamp": datetime.now().isoformat(),
             "gee_initialized": True,
             "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None,
             "cache_size": len(cache),
             "spatial_cache_size": len(spatial_cache),
-            "pdf_cache_size": len(pdf_image_cache),
-            "wheat_winter_detector": "enabled",
-            "pdf_export": "enabled"
+            "wheat_winter_detector": "enabled"
         })
         
     except Exception as e:
@@ -916,146 +708,8 @@ def ping():
         "message": "Pong",
         "timestamp": datetime.now().isoformat(),
         "cache_size": len(cache),
-        "spatial_cache_size": len(spatial_cache),
-        "pdf_cache_size": len(pdf_image_cache)
+        "spatial_cache_size": len(spatial_cache)
     })
-
-# NEW: PDF Export Endpoints
-@app.route("/api/map/snapshot-rgb", methods=["POST"])
-def generate_rgb_snapshot():
-    """Generate RGB satellite imagery snapshot for PDF export"""
-    try:
-        if not gee_initialized:
-            return jsonify({
-                "success": False,
-                "error": "GEE not initialized"
-            }), 500
-        
-        # Parse request data
-        data = request.get_json()
-        coords = data.get("polygon")  # Polygon coordinates
-        start_date = data.get("startDate")
-        end_date = data.get("endDate")
-        width = data.get("width", 800)
-        height = data.get("height", 600)
-        padding = data.get("padding", 0.1)
-        
-        # Validate inputs
-        if not coords or not start_date or not end_date:
-            return jsonify({
-                "success": False,
-                "error": "Missing required parameters: polygon, startDate, endDate"
-            }), 400
-        
-        # Check cache first
-        cache_key = get_pdf_cache_key(coords, start_date, end_date, "rgb", width, height)
-        with pdf_cache_lock:
-            if cache_key in pdf_image_cache:
-                print("Cache hit for RGB snapshot")
-                return jsonify(pdf_image_cache[cache_key])
-        
-        print(f"Generating RGB snapshot: {width}x{height} for date range {start_date} to {end_date}")
-        
-        # Create Earth Engine geometry
-        polygon = ee.Geometry.Polygon(coords)
-        
-        # Generate the snapshot
-        result = generate_map_snapshot(
-            polygon=polygon,
-            start_date=start_date,
-            end_date=end_date,
-            image_type='rgb',
-            width=width,
-            height=height,
-            padding=padding
-        )
-        
-        # Cache the result if successful
-        if result.get('success'):
-            with pdf_cache_lock:
-                pdf_image_cache[cache_key] = result
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        error_message = str(e)
-        stack_trace = traceback.format_exc()
-        print(f"Error generating RGB snapshot: {error_message}")
-        print(f"Stack trace: {stack_trace}")
-        
-        return jsonify({
-            "success": False,
-            "error": error_message,
-            "stack_trace": stack_trace
-        }), 500
-
-@app.route("/api/map/snapshot-ndvi", methods=["POST"])
-def generate_ndvi_snapshot():
-    """Generate NDVI imagery snapshot for PDF export"""
-    try:
-        if not gee_initialized:
-            return jsonify({
-                "success": False,
-                "error": "GEE not initialized"
-            }), 500
-        
-        # Parse request data
-        data = request.get_json()
-        coords = data.get("polygon")  # Polygon coordinates
-        start_date = data.get("startDate")
-        end_date = data.get("endDate")
-        width = data.get("width", 800)
-        height = data.get("height", 600)
-        padding = data.get("padding", 0.1)
-        
-        # Validate inputs
-        if not coords or not start_date or not end_date:
-            return jsonify({
-                "success": False,
-                "error": "Missing required parameters: polygon, startDate, endDate"
-            }), 400
-        
-        # Check cache first
-        cache_key = get_pdf_cache_key(coords, start_date, end_date, "ndvi", width, height)
-        with pdf_cache_lock:
-            if cache_key in pdf_image_cache:
-                print("Cache hit for NDVI snapshot")
-                return jsonify(pdf_image_cache[cache_key])
-        
-        print(f"Generating NDVI snapshot: {width}x{height} for date range {start_date} to {end_date}")
-        
-        # Create Earth Engine geometry
-        polygon = ee.Geometry.Polygon(coords)
-        
-        # Generate the snapshot
-        result = generate_map_snapshot(
-            polygon=polygon,
-            start_date=start_date,
-            end_date=end_date,
-            image_type='ndvi',
-            width=width,
-            height=height,
-            padding=padding
-        )
-        
-        # Cache the result if successful
-        if result.get('success'):
-            with pdf_cache_lock:
-                pdf_image_cache[cache_key] = result
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        error_message = str(e)
-        stack_trace = traceback.format_exc()
-        print(f"Error generating NDVI snapshot: {error_message}")
-        print(f"Stack trace: {stack_trace}")
-        
-        return jsonify({
-            "success": False,
-            "error": error_message,
-            "stack_trace": stack_trace
-        }), 500
 
 @app.route("/api/warmup", methods=["POST"])
 def warmup():
@@ -1092,8 +746,7 @@ def warmup():
             "timestamp": datetime.now().isoformat(),
             "gee_initialized": True,
             "cache_size": len(cache),
-            "wheat_winter_detector": "ready",
-            "pdf_export": "ready"
+            "wheat_winter_detector": "ready"
         })
         
     except Exception as e:
@@ -1103,11 +756,6 @@ def warmup():
             "message": f"Warmup failed: {str(e)}",
             "timestamp": datetime.now().isoformat()
         }), 500
-
-# [Continue with all the existing functions and endpoints]
-# ... (keeping all the remaining functions unchanged: detect_primary_emergence_and_planting, 
-# detect_tillage_replanting_events, detect_rainfall_without_emergence, format_date_for_display,
-# generate_agronomic_report, calculate_std_dev, generate_ndvi, generate_ndvi_timeseries)
 
 # MODIFIED: Enhanced primary emergence detection with wheat winter path
 def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainfall_data=None, coordinates=None, force_winter_detector=False):
@@ -2164,7 +1812,6 @@ if success:
     print(f"✓ Backend ready: {init_message}")
     print(f"✓ Winter Wheat Detection: ENABLED")
     print(f"✓ Spatial Adaptation Cache: READY")
-    print(f"✓ PDF Export Endpoints: READY")
 else:
     print(f"✗ Backend startup failed: {init_message}")
 
