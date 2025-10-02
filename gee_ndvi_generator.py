@@ -34,32 +34,6 @@ cache_lock = threading.Lock()
 spatial_cache = TTLCache(maxsize=500, ttl=86400)  # 24 hour TTL for spatial patterns
 spatial_cache_lock = threading.Lock()
 
-# Define crop-specific emergence windows (in days)
-EMERGENCE_WINDOWS = {
-    "Maize": (6, 10),
-    "Soyabeans": (7, 11),
-    "Sorghum": (6, 10),
-    "Cotton": (5, 9),
-    "Groundnuts": (6, 10),
-    "Barley": (7, 11),
-    "Wheat": (7, 11),
-    "Millet": (4, 8),
-    "Tobacco": (7, 11)  # For nursery emergence
-}
-
-# Constants for emergence detection (existing)
-EMERGENCE_THRESHOLD = 0.2
-DEFAULT_EMERGENCE_WINDOW = (5, 10)  # Default for unknown crops
-SIGNIFICANT_RAINFALL = 10  # mm, threshold for significant rainfall
-
-# NEW: Constants for wheat winter detection
-THRESHOLD_WHEAT_WINTER = 0.15      # lower absolute NDVI trigger
-MIN_SLOPE_DELTA = 0.04             # minimum NDVI rise
-MAX_SLOPE_DAYS = 10                # window to realize the rise
-CLOUD_CANDIDATE_MAX = 30           # % cloud cap at candidate emergence
-SMOOTH_WINDOW = 3                  # 3-point median smoothing
-NDVI_AMPLITUDE_MIN = 0.15          # geometry/season sanity check
-
 # NEW: Index configurations with ranges, palettes, and explanations
 INDEX_CONFIGS = {
     "NDVI": {
@@ -93,6 +67,32 @@ INDEX_CONFIGS = {
         "explanation": "True-color imagery, showing the field as it would appear to the human eye."
     }
 }
+
+# Define crop-specific emergence windows (in days)
+EMERGENCE_WINDOWS = {
+    "Maize": (6, 10),
+    "Soyabeans": (7, 11),
+    "Sorghum": (6, 10),
+    "Cotton": (5, 9),
+    "Groundnuts": (6, 10),
+    "Barley": (7, 11),
+    "Wheat": (7, 11),
+    "Millet": (4, 8),
+    "Tobacco": (7, 11)  # For nursery emergence
+}
+
+# Constants for emergence detection (existing)
+EMERGENCE_THRESHOLD = 0.2
+DEFAULT_EMERGENCE_WINDOW = (5, 10)  # Default for unknown crops
+SIGNIFICANT_RAINFALL = 10  # mm, threshold for significant rainfall
+
+# NEW: Constants for wheat winter detection
+THRESHOLD_WHEAT_WINTER = 0.15      # lower absolute NDVI trigger
+MIN_SLOPE_DELTA = 0.04             # minimum NDVI rise
+MAX_SLOPE_DAYS = 10                # window to realize the rise
+CLOUD_CANDIDATE_MAX = 30           # % cloud cap at candidate emergence
+SMOOTH_WINDOW = 3                  # 3-point median smoothing
+NDVI_AMPLITUDE_MIN = 0.15          # geometry/season sanity check
 
 # Global variable to track GEE initialization
 gee_initialization_time = None
@@ -144,7 +144,7 @@ def get_cache_key(coords, start_date, end_date, endpoint_type, index_type="NDVI"
 def get_index(image, index_type):
     """
     Calculate the specified vegetation index.
-    Supports: NDVI, EVI, SAVI, NDMI, NDWI, RGB
+    Supports: NDVI, EVI, SAVI, NDMI, NDWI
     """
     if index_type == "NDVI":
         return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
@@ -174,9 +174,6 @@ def get_index(image, index_type):
 
     elif index_type == "NDWI":
         return image.normalizedDifference(['B3', 'B8']).rename('NDWI')
-
-    elif index_type == "RGB":
-        return image.select(['B4', 'B3', 'B2'])
 
     else:
         # Default fallback: NDVI
@@ -742,7 +739,7 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
 
 @app.route("/")
 def index():
-    return "NDVI & RGB backend with Multi-Index Support (NDVI, EVI, SAVI, NDMI, NDWI) is live!"
+    return "NDVI & RGB backend with Multi-Index Support (NDVI, EVI, SAVI, NDMI, NDWI, RGB) is live!"
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
@@ -758,7 +755,7 @@ def health_check():
         
         return jsonify({
             "success": True, 
-            "message": f"Backend is healthy. GEE initialized at startup. Multi-Index Support enabled (NDVI, EVI, SAVI, NDMI, NDWI).",
+            "message": f"Backend is healthy. GEE initialized at startup. Multi-Index Support enabled (NDVI, EVI, SAVI, NDMI, NDWI, RGB).",
             "timestamp": datetime.now().isoformat(),
             "gee_initialized": True,
             "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None,
@@ -1496,7 +1493,7 @@ def generate_ndvi():
         coords = data.get("coordinates")
         start = data.get("startDate")
         end = data.get("endDate")
-        index_type = data.get("index_type", "NDVI")
+        index_type = data.get("index_type", "NDVI") # NEW: Get index type, default to NDVI
         
         # Validate inputs
         if not coords or not start or not end:
@@ -1559,8 +1556,8 @@ def generate_ndvi():
             index_image = get_index(image, index_type)
             index_name = index_type
             
-            # Get visualization settings from config
-            config = INDEX_CONFIGS.get(index_type, INDEX_CONFIGS["NDVI"])
+            # NEW: Get visualization parameters from INDEX_CONFIGS
+            config = INDEX_CONFIGS[index_type]
             vis_image = index_image.visualize(
                 min=config["range"][0], 
                 max=config["range"][1], 
@@ -1600,10 +1597,8 @@ def generate_ndvi():
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
             
-            # NEW: Get index configuration
-            config = INDEX_CONFIGS.get(index_type, INDEX_CONFIGS["NDVI"])
-            
-            # NEW: Prepare enriched response with backend configuration
+            # NEW: Prepare response with enriched format
+            config = INDEX_CONFIGS[index_type]
             response = {
                 "success": True,
                 "index": index_type,
@@ -1638,9 +1633,7 @@ def generate_ndvi():
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
             
-            # NEW: Get index configuration for error response
-            config = INDEX_CONFIGS.get(index_type, INDEX_CONFIGS["NDVI"])
-            
+            config = INDEX_CONFIGS[index_type]
             response = {
                 "success": True,
                 "index": index_type,
@@ -1695,7 +1688,7 @@ def generate_ndvi_timeseries():
         end = data.get("endDate")
         crop = data.get("crop", "")  # NEW: for wheat detection
         force_winter_detector = data.get("forceWinterDetector", False)  # NEW: override flag
-        index_type = data.get("index_type", "NDVI")
+        index_type = data.get("index_type", "NDVI") # NEW: Get index type
         
         # Validate inputs
         if not coords or not start or not end:
@@ -1854,10 +1847,8 @@ def generate_ndvi_timeseries():
         # Sort time series by date
         index_time_series.sort(key=lambda x: x["date"])
         
-        # NEW: Get index configuration
-        config = INDEX_CONFIGS.get(index_type, INDEX_CONFIGS["NDVI"])
-        
-        # NEW: Prepare enriched response
+        # NEW: Prepare enriched response with index config
+        config = INDEX_CONFIGS[index_type]
         response = {
             "success": True,
             "index": index_type,
