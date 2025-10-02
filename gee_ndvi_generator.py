@@ -1233,13 +1233,29 @@ def generate_ndvi():
             index_image = get_index(image, index_type)
             index_name = index_type
             
-            # Visualization settings based on index type
-            if index_type == "NDVI" or index_type == "NDMI":
-                vis_image = index_image.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
+            # Create base visualization with existing palettes for vegetation
+            if index_type == "NDVI":
+                # NDVI: stressed vegetation (red/yellow) → healthy vegetation (dark green)
+                base_vis = index_image.visualize(min=-0.5, max=1, palette=["#8B0000", "#FF4500", "#FFD700", "#ADFF2F", "#228B22", "#006400"])
             elif index_type == "EVI":
-                vis_image = index_image.visualize(min=-1, max=1, palette=["blue", "red", "yellow", "green"])
+                # EVI: stressed vegetation (red/yellow) → healthy vegetation (dark green)
+                base_vis = index_image.visualize(min=-1, max=1, palette=["#8B0000", "#FF4500", "#FFD700", "#ADFF2F", "#228B22", "#006400"])
             elif index_type == "SAVI":
-                vis_image = index_image.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
+                # SAVI: stressed vegetation (red/yellow) → healthy vegetation (dark green)
+                base_vis = index_image.visualize(min=-0.5, max=1, palette=["#8B0000", "#FF4500", "#FFD700", "#ADFF2F", "#228B22", "#006400"])
+            elif index_type == "NDMI":
+                # NDMI: dry (brown) → wet (white) → very wet (greenish)
+                base_vis = index_image.visualize(min=-0.5, max=1, palette=["#8B4513", "#D2691E", "#F4A460", "#FFFFFF", "#90EE90", "#32CD32"])
+            else:
+                # Fallback visualization
+                base_vis = index_image.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
+            
+            # Add water masking: Override water pixels (index < 0) with deep blue
+            water_mask = index_image.lt(0)
+            water_layer = water_mask.selfMask().visualize(palette=["#08306b"])
+            
+            # Mosaic layers: water layer takes priority over base vegetation visualization
+            vis_image = ee.ImageCollection([base_vis, water_layer]).mosaic()
             
             # Calculate statistics
             stats = index_image.reduceRegion(
@@ -1580,6 +1596,7 @@ if success:
     print(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, RGB)")
     print(f"✓ Wheat Winter Detection: ENABLED")
     print(f"✓ Spatial Adaptation Cache: READY")
+    print(f"✓ Water Masking: ENABLED (water pixels < 0 → deep blue #08306b)")
 else:
     print(f"✗ Backend startup failed: {init_message}")
 
