@@ -34,40 +34,6 @@ cache_lock = threading.Lock()
 spatial_cache = TTLCache(maxsize=500, ttl=86400)  # 24 hour TTL for spatial patterns
 spatial_cache_lock = threading.Lock()
 
-# NEW: Index configurations with ranges, palettes, and explanations
-INDEX_CONFIGS = {
-    "NDVI": {
-        "range": [-1, 1],
-        "palette": ["blue", "red", "yellow", "green"],
-        "explanation": "NDVI measures vegetation greenness. Higher values (0.6-0.9) mean healthy, dense crops; negative values (<0) indicate bare soil, water, or built-up areas."
-    },
-    "EVI": {
-        "range": [-1, 1],
-        "palette": ["blue", "red", "yellow", "green"],
-        "explanation": "EVI corrects for soil and atmosphere noise. It's especially reliable in high biomass crops like maize or tobacco."
-    },
-    "SAVI": {
-        "range": [-1, 1],
-        "palette": ["blue", "red", "yellow", "green"],
-        "explanation": "SAVI reduces soil background effects. Useful in early crop growth stages or sparse vegetation."
-    },
-    "NDMI": {
-        "range": [-1, 1],
-        "palette": ["brown", "yellow", "green", "darkgreen"],
-        "explanation": "NDMI tracks crop canopy water content. High values = well-watered vegetation; low values = water stress or senescence."
-    },
-    "NDWI": {
-        "range": [-1, 1],
-        "palette": ["brown", "yellow", "green", "blue"],
-        "explanation": "NDWI highlights surface water. Positive values (0.2-1) = water bodies; negative values = soil or vegetation."
-    },
-    "RGB": {
-        "range": [0, 255],
-        "palette": [],
-        "explanation": "True-color imagery, showing the field as it would appear to the human eye."
-    }
-}
-
 # Define crop-specific emergence windows (in days)
 EMERGENCE_WINDOWS = {
     "Maize": (6, 10),
@@ -144,7 +110,7 @@ def get_cache_key(coords, start_date, end_date, endpoint_type, index_type="NDVI"
 def get_index(image, index_type):
     """
     Calculate the specified vegetation index.
-    Supports: NDVI, EVI, SAVI, NDMI, NDWI
+    Supports: NDVI, EVI, SAVI, NDMI
     """
     if index_type == "NDVI":
         return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
@@ -171,9 +137,6 @@ def get_index(image, index_type):
 
     elif index_type == "NDMI":
         return image.normalizedDifference(['B8', 'B11']).rename('NDMI')
-
-    elif index_type == "NDWI":
-        return image.normalizedDifference(['B3', 'B8']).rename('NDWI')
 
     else:
         # Default fallback: NDVI
@@ -739,7 +702,7 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
 
 @app.route("/")
 def index():
-    return "NDVI & RGB backend with Multi-Index Support (NDVI, EVI, SAVI, NDMI, NDWI, RGB) is live!"
+    return "NDVI & RGB backend with Multi-Index Support (NDVI, EVI, SAVI, NDMI) is live!"
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
@@ -755,13 +718,13 @@ def health_check():
         
         return jsonify({
             "success": True, 
-            "message": f"Backend is healthy. GEE initialized at startup. Multi-Index Support enabled (NDVI, EVI, SAVI, NDMI, NDWI, RGB).",
+            "message": f"Backend is healthy. GEE initialized at startup. Multi-Index Support enabled (NDVI, EVI, SAVI, NDMI).",
             "timestamp": datetime.now().isoformat(),
             "gee_initialized": True,
             "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None,
             "cache_size": len(cache),
             "spatial_cache_size": len(spatial_cache),
-            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "RGB"]
         })
         
     except Exception as e:
@@ -818,7 +781,7 @@ def warmup():
             "timestamp": datetime.now().isoformat(),
             "gee_initialized": True,
             "cache_size": len(cache),
-            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "RGB"]
         })
         
     except Exception as e:
@@ -1500,7 +1463,7 @@ def generate_ndvi():
             return jsonify({"success": False, "error": "Missing input fields"}), 400
         
         # Validate index type
-        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "RGB"]
         if index_type not in valid_indices:
             return jsonify({
                 "success": False,
@@ -1556,13 +1519,13 @@ def generate_ndvi():
             index_image = get_index(image, index_type)
             index_name = index_type
             
-            # NEW: Get visualization parameters from INDEX_CONFIGS
-            config = INDEX_CONFIGS[index_type]
-            vis_image = index_image.visualize(
-                min=config["range"][0], 
-                max=config["range"][1], 
-                palette=config["palette"]
-            )
+            # Visualization settings based on index type
+            if index_type == "NDVI" or index_type == "NDMI":
+                vis_image = index_image.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
+            elif index_type == "EVI":
+                vis_image = index_image.visualize(min=-1, max=1, palette=["blue", "red", "yellow", "green"])
+            elif index_type == "SAVI":
+                vis_image = index_image.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
             
             # Calculate statistics
             stats = index_image.reduceRegion(
@@ -1597,15 +1560,11 @@ def generate_ndvi():
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
             
-            # NEW: Prepare response with enriched format
-            config = INDEX_CONFIGS[index_type]
+            # Prepare response based on index type
             response = {
                 "success": True,
-                "index": index_type,
+                "index_type": index_type,
                 "tile_url": map_id["tile_fetcher"].url_format,
-                "palette": config["palette"],
-                "range": config["range"],
-                "explanation": config["explanation"],
                 "image_date": image_date,
                 "collection_size": collection_size,
                 "cloudy_pixel_percentage": display_cloud_percentage,
@@ -1633,13 +1592,9 @@ def generate_ndvi():
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
             
-            config = INDEX_CONFIGS[index_type]
             response = {
                 "success": True,
-                "index": index_type,
-                "palette": config["palette"],
-                "range": config["range"],
-                "explanation": config["explanation"],
+                "index_type": index_type,
                 "image_date": image_date,
                 "collection_size": collection_size,
                 "cloudy_pixel_percentage": display_cloud_percentage,
@@ -1695,7 +1650,7 @@ def generate_ndvi_timeseries():
             return jsonify({"success": False, "error": "Missing input fields"}), 400
         
         # Validate index type
-        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI"]
+        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI"]
         if index_type not in valid_indices:
             return jsonify({
                 "success": False,
@@ -1847,14 +1802,10 @@ def generate_ndvi_timeseries():
         # Sort time series by date
         index_time_series.sort(key=lambda x: x["date"])
         
-        # NEW: Prepare enriched response with index config
-        config = INDEX_CONFIGS[index_type]
+        # Prepare base response
         response = {
             "success": True,
-            "index": index_type,
-            "palette": config["palette"],
-            "range": config["range"],
-            "explanation": config["explanation"],
+            "index_type": index_type,
             "time_series": index_time_series,
             "collection_size": collection_size
         }
@@ -1914,7 +1865,7 @@ print("Starting backend initialization...")
 success, init_message = initialize_gee_at_startup()
 if success:
     print(f"✓ Backend ready: {init_message}")
-    print(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, NDWI, RGB)")
+    print(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, RGB)")
     print(f"✓ Wheat Winter Detection: ENABLED")
     print(f"✓ Spatial Adaptation Cache: READY")
 else:
