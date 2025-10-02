@@ -1234,14 +1234,12 @@ def generate_ndvi():
             index_name = index_type
             
             # Visualization settings based on index type
-            if index_type == "NDVI":
-                vis_image = index_image.visualize(min=-0.5, max=1, palette=["brown", "yellow", "lightgreen", "darkgreen"])
+            if index_type == "NDVI" or index_type == "NDMI":
+                vis_image = index_image.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
             elif index_type == "EVI":
-                vis_image = index_image.visualize(min=-0.5, max=1, palette=["brown", "yellow", "lightgreen", "darkgreen"])
+                vis_image = index_image.visualize(min=-1, max=1, palette=["blue", "red", "yellow", "green"])
             elif index_type == "SAVI":
-                vis_image = index_image.visualize(min=-0.5, max=1, palette=["brown", "yellow", "lightgreen", "darkgreen"])
-            elif index_type == "NDMI":
-                vis_image = index_image.visualize(min=-0.5, max=1, palette=["brown", "white", "blue"])
+                vis_image = index_image.visualize(min=-0.5, max=1, palette=["blue", "red", "yellow", "green"])
             
             # Calculate statistics
             stats = index_image.reduceRegion(
@@ -1587,4 +1585,4 @@ else:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True, threaded=True)
+    app.run(host="0.0.0.0", port=port, debug=True)
