@@ -38,27 +38,27 @@ spatial_cache_lock = threading.Lock()
 INDEX_CONFIGS = {
     "NDVI": {
         "range": [-1, 1],
-        "palette": ["blue", "red", "yellow", "green"],
+        "palette": ["#0000ff", "#a50026", "#fdae61", "#ffffbf", "#1a9850", "#006837"],
         "explanation": "NDVI measures vegetation greenness. Higher values (0.6-0.9) mean healthy, dense crops; negative values (<0) indicate bare soil, water, or built-up areas."
     },
     "EVI": {
         "range": [-1, 1],
-        "palette": ["blue", "red", "yellow", "green"],
+        "palette": ["#0000ff", "#a50026", "#fdae61", "#ffffbf", "#1a9850", "#006837"],
         "explanation": "EVI corrects for soil and atmosphere noise. It's especially reliable in high biomass crops like maize or tobacco."
     },
     "SAVI": {
         "range": [-1, 1],
-        "palette": ["blue", "red", "yellow", "green"],
+        "palette": ["#0000ff", "#a50026", "#fdae61", "#ffffbf", "#1a9850", "#006837"],
         "explanation": "SAVI reduces soil background effects. Useful in early crop growth stages or sparse vegetation."
     },
     "NDMI": {
         "range": [-1, 1],
-        "palette": ["brown", "yellow", "green", "darkgreen"],
+        "palette": ["#d73027", "#fdae61", "#ffffbf", "#1a9850", "#2c7bb6"],
         "explanation": "NDMI tracks crop canopy water content. High values = well-watered vegetation; low values = water stress or senescence."
     },
     "NDWI": {
         "range": [-1, 1],
-        "palette": ["brown", "yellow", "green", "blue"],
+        "palette": ["#f7fcb9", "#addd8e", "#31a354", "#2c7fb8", "#253494"],
         "explanation": "NDWI highlights surface water. Positive values (0.2-1) = water bodies; negative values = soil or vegetation."
     },
     "RGB": {
