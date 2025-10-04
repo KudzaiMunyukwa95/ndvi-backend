@@ -6,3 +6,4 @@ openai>=1.0.0
 python-dotenv
 cachetools
 geohash2
+gunicorn==21.2.0
