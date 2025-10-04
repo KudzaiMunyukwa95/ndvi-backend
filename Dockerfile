@@ -12,5 +12,5 @@ COPY . .
 # Expose port (CapRover will map this)
 EXPOSE 5000
 
-# Run with Gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "180", "gee_ndvi_generator:app"]
+# Run with Gunicorn using preload to initialize GEE once
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "180", "--preload", "gee_ndvi_generator:app"]
