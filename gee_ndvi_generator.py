@@ -34,32 +34,65 @@ cache_lock = threading.Lock()
 spatial_cache = TTLCache(maxsize=500, ttl=86400)  # 24 hour TTL for spatial patterns
 spatial_cache_lock = threading.Lock()
 
-# NEW: Index configurations with ranges, palettes, and explanations
+# CORRECTED: Index configurations with proper palettes, ranges, and explanations
 INDEX_CONFIGS = {
     "NDVI": {
         "range": [-1, 1],
-        "palette": ["#0000ff", "#a50026", "#fdae61", "#ffffbf", "#1a9850", "#006837"],
-        "explanation": "NDVI measures vegetation greenness. Higher values (0.6-0.9) mean healthy, dense crops; negative values (<0) indicate bare soil, water, or built-up areas."
+        "palette": [
+            "#0000ff",  # -1.0 → deep blue (water)
+            "#d7191c",  # -0.1 → bare soil / built-up
+            "#fdae61",  # 0.2 → sparse vegetation
+            "#ffffbf",  # 0.4 → moderate vegetation
+            "#a6d96a",  # 0.6 → healthy vegetation
+            "#1a9641"   # 0.9 → dense canopy
+        ],
+        "explanation": "NDVI measures vegetation greenness. Values <0 = water or bare soil. 0.2–0.4 = sparse vegetation. 0.6–0.9 = dense healthy crops."
     },
     "EVI": {
         "range": [-1, 1],
-        "palette": ["#0000ff", "#a50026", "#fdae61", "#ffffbf", "#1a9850", "#006837"],
-        "explanation": "EVI corrects for soil and atmosphere noise. It's especially reliable in high biomass crops like maize or tobacco."
+        "palette": [
+            "#0000ff",  # -1.0 → deep blue (water)
+            "#d7191c",  # -0.1 → bare soil / built-up
+            "#fdae61",  # 0.2 → sparse vegetation
+            "#ffffbf",  # 0.4 → moderate vegetation
+            "#a6d96a",  # 0.6 → healthy vegetation
+            "#1a9641"   # 0.9 → dense canopy
+        ],
+        "explanation": "EVI measures vegetation greenness. Values <0 = water or bare soil. 0.2–0.4 = sparse vegetation. 0.6–0.9 = dense healthy crops."
     },
     "SAVI": {
         "range": [-1, 1],
-        "palette": ["#0000ff", "#a50026", "#fdae61", "#ffffbf", "#1a9850", "#006837"],
-        "explanation": "SAVI reduces soil background effects. Useful in early crop growth stages or sparse vegetation."
+        "palette": [
+            "#0000ff",  # -1.0 → deep blue (water)
+            "#d7191c",  # -0.1 → bare soil / built-up
+            "#fdae61",  # 0.2 → sparse vegetation
+            "#ffffbf",  # 0.4 → moderate vegetation
+            "#a6d96a",  # 0.6 → healthy vegetation
+            "#1a9641"   # 0.9 → dense canopy
+        ],
+        "explanation": "SAVI measures vegetation greenness. Values <0 = water or bare soil. 0.2–0.4 = sparse vegetation. 0.6–0.9 = dense healthy crops."
     },
     "NDMI": {
         "range": [-1, 1],
-        "palette": ["#d73027", "#fdae61", "#ffffbf", "#1a9850", "#2c7bb6"],
-        "explanation": "NDMI tracks crop canopy water content. High values = well-watered vegetation; low values = water stress or senescence."
+        "palette": [
+            "#d73027",  # very dry
+            "#fdae61",  # moderate stress
+            "#ffffbf",  # neutral
+            "#1a9850",  # moist vegetation
+            "#2c7bb6"   # high canopy water content
+        ],
+        "explanation": "NDMI tracks canopy moisture. Negative values = dryness, positive values = well-watered crops."
     },
     "NDWI": {
         "range": [-1, 1],
-        "palette": ["#f7fcb9", "#addd8e", "#31a354", "#2c7fb8", "#253494"],
-        "explanation": "NDWI highlights surface water. Positive values (0.2-1) = water bodies; negative values = soil or vegetation."
+        "palette": [
+            "#f7fcb9",  # dry/bare
+            "#addd8e",  # some moisture
+            "#31a354",  # vegetation with water
+            "#2c7fb8",  # shallow water
+            "#253494"   # deep water
+        ],
+        "explanation": "NDWI highlights water. Positive values (0.2–1) = surface water, negative values = soil or vegetation."
     },
     "RGB": {
         "range": [0, 255],
