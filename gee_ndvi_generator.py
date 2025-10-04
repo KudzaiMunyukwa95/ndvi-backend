@@ -118,15 +118,24 @@ NDVI_AMPLITUDE_MIN = 0.15          # geometry/season sanity check
 # Global variable to track GEE initialization
 gee_initialization_time = None
 gee_initialized = False
+gee_initialization_error = None
+gee_initializing = False
 
 def initialize_gee_at_startup():
     """Initialize Google Earth Engine once at server startup"""
-    global gee_initialization_time, gee_initialized
+    global gee_initialization_time, gee_initialized, gee_initialization_error, gee_initializing
     
     if gee_initialized:
         return True, "GEE already initialized"
     
+    if gee_initialization_error:
+        return False, f"GEE initialization previously failed: {gee_initialization_error}"
+    
+    if gee_initializing:
+        return False, "GEE initialization in progress"
+    
     try:
+        gee_initializing = True
         print("Initializing Google Earth Engine at startup...")
         start_time = datetime.now()
         
@@ -147,14 +156,18 @@ def initialize_gee_at_startup():
         gee_initialization_time = datetime.now()
         init_duration = (gee_initialization_time - start_time).total_seconds()
         gee_initialized = True
+        gee_initializing = False
         print(f"GEE initialized successfully at startup in {init_duration:.2f} seconds")
         
         return True, f"GEE initialized in {init_duration:.2f}s"
         
     except Exception as e:
-        print(f"GEE initialization error at startup: {str(e)}")
+        error_msg = str(e)
+        print(f"GEE initialization error at startup: {error_msg}")
+        gee_initialization_error = error_msg
         gee_initialized = False
-        return False, f"GEE initialization failed: {str(e)}"
+        gee_initializing = False
+        return False, f"GEE initialization failed: {error_msg}"
 
 def get_cache_key(coords, start_date, end_date, endpoint_type, index_type="NDVI"):
     """Generate a cache key for the given parameters"""
@@ -764,14 +777,28 @@ def index():
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint that responds quickly during initialization"""
     try:
+        # Return fast response even during initialization
+        if gee_initializing:
+            return jsonify({
+                "success": True, 
+                "message": "Backend is starting up, GEE initialization in progress",
+                "timestamp": datetime.now().isoformat(),
+                "gee_initialized": False,
+                "gee_initializing": True,
+                "cache_size": len(cache),
+                "spatial_cache_size": len(spatial_cache),
+                "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+            }), 200
+        
         if not gee_initialized:
             return jsonify({
                 "success": False, 
-                "message": "GEE not initialized",
+                "message": f"GEE not initialized: {gee_initialization_error}",
                 "timestamp": datetime.now().isoformat(),
-                "gee_initialized": False
+                "gee_initialized": False,
+                "gee_initializing": False
             }), 500
         
         return jsonify({
@@ -779,6 +806,7 @@ def health_check():
             "message": f"Backend is healthy. GEE initialized at startup. Multi-Index Support enabled (NDVI, EVI, SAVI, NDMI, NDWI, RGB).",
             "timestamp": datetime.now().isoformat(),
             "gee_initialized": True,
+            "gee_initializing": False,
             "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None,
             "cache_size": len(cache),
             "spatial_cache_size": len(spatial_cache),
@@ -790,7 +818,8 @@ def health_check():
             "success": False, 
             "message": f"Health check failed: {str(e)}",
             "timestamp": datetime.now().isoformat(),
-            "gee_initialized": gee_initialized
+            "gee_initialized": gee_initialized,
+            "gee_initializing": gee_initializing
         }), 500
 
 @app.route("/api/ping", methods=["GET"])
@@ -808,12 +837,24 @@ def ping():
 def warmup():
     """Dedicated warmup endpoint"""
     try:
-        if not gee_initialized:
+        # Quick response during initialization
+        if gee_initializing:
             return jsonify({
-                "success": False,
-                "message": "GEE not initialized at startup",
-                "timestamp": datetime.now().isoformat()
-            }), 500
+                "success": True,
+                "message": "GEE initialization in progress",
+                "timestamp": datetime.now().isoformat(),
+                "gee_initializing": True
+            }), 200
+        
+        if not gee_initialized:
+            # Try to initialize if not already done
+            success, message = initialize_gee_at_startup()
+            if not success:
+                return jsonify({
+                    "success": False,
+                    "message": f"GEE initialization failed: {message}",
+                    "timestamp": datetime.now().isoformat()
+                }), 500
         
         # Test a simple Sentinel-2 operation to warm up
         print("Warming up with test Sentinel-2 query...")
@@ -1930,16 +1971,22 @@ def generate_ndvi_timeseries():
             "stack_trace": stack_trace
         }), 500
 
-# Initialize GEE at startup
-print("Starting backend initialization...")
-success, init_message = initialize_gee_at_startup()
-if success:
-    print(f"✓ Backend ready: {init_message}")
-    print(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, NDWI, RGB)")
-    print(f"✓ Wheat Winter Detection: ENABLED")
-    print(f"✓ Spatial Adaptation Cache: READY")
-else:
-    print(f"✗ Backend startup failed: {init_message}")
+# NEW: Pre-initialization at startup for preload mode
+def startup_initialization():
+    """Called during app startup when using --preload"""
+    print("=== STARTUP INITIALIZATION (PRELOAD MODE) ===")
+    success, message = initialize_gee_at_startup()
+    if success:
+        print(f"✓ GEE Preload Success: {message}")
+        print(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, NDWI, RGB)")
+        print(f"✓ Wheat Winter Detection: ENABLED")
+        print(f"✓ Spatial Adaptation Cache: READY")
+    else:
+        print(f"✗ GEE Preload Failed: {message}")
+        print("✗ Application may not function properly")
+
+# Initialize GEE immediately when module loads (for preload mode)
+startup_initialization()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
