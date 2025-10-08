@@ -34,7 +34,7 @@ cache_lock = threading.Lock()
 spatial_cache = TTLCache(maxsize=500, ttl=86400)  # 24 hour TTL for spatial patterns
 spatial_cache_lock = threading.Lock()
 
-# CORRECTED: Scientifically accurate vegetation index palettes for agricultural monitoring
+# FINAL SCIENTIFIC COLOR AND RANGE CONFIGURATION FOR AFRICAN CROPLANDS
 INDEX_CONFIGS = {
     # Vegetation health indices: Red (stressed) → Yellow (moderate) → Green (healthy dense canopy)
     "NDVI": {
@@ -54,13 +54,13 @@ INDEX_CONFIGS = {
     },
     # Canopy moisture index: Yellow (dry) → Light Green (moderate) → Dark Green (moist/saturated)
     "NDMI": {
-        "range": [-0.3, 0.7],  # Realistic range for agricultural canopy moisture in Africa
+        "range": [-0.2, 0.6],  # Updated range for optimal moisture detection in African croplands
         "palette": ["#fdae61", "#ffffbf", "#a6d96a", "#1a9850"],
         "explanation": "Canopy moisture index: yellow = dry canopy, light green = moderate moisture, dark green = moist/saturated canopy."
     },
     # Water detection index: Yellow/Green (dry/vegetated) → Blue (open water)
     "NDWI": {
-        "range": [0, 0.5],  # Agricultural range avoiding negative values that cause confusion
+        "range": [0.05, 0.4],  # Optimized range for surface and sub-canopy water detection
         "palette": ["#fff7bc", "#c7e9b4", "#7fcdbb", "#41b6c4", "#1d91c0", "#0c2c84"],
         "explanation": "Water detection index: yellow/green = dry or vegetated areas, blue = water bodies or very high moisture."
     },
@@ -194,8 +194,10 @@ def get_index(image, index_type):
 
     elif index_type == "NDWI":
         ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI')
-        # Clamp to agricultural range [0, 0.5] to avoid confusion
-        return ndwi.where(ndwi.lt(0), 0).where(ndwi.gt(0.5), 0.5)
+        # Apply optimized range clipping for surface water detection
+        config = INDEX_CONFIGS["NDWI"]
+        min_val, max_val = config["range"]
+        return ndwi.where(ndwi.lt(min_val), min_val).where(ndwi.gt(max_val), max_val)
 
     else:
         # Default fallback: NDVI with clamping
@@ -1641,7 +1643,8 @@ def generate_ndvi():
         if index_type == "RGB":
             # RGB visualization
             rgb = image.select(["B4", "B3", "B2"])
-            vis_image = rgb.visualize(min=0, max=3000)
+            # Apply performance optimization with reproject
+            vis_image = rgb.visualize(min=0, max=3000).reproject(crs='EPSG:4326', scale=30)
             
             # No stats for RGB
             stats_dict = {}
@@ -1651,7 +1654,7 @@ def generate_ndvi():
             index_image = get_index(image, index_type)
             index_name = index_type
             
-            # Get visualization parameters from corrected INDEX_CONFIGS
+            # Get visualization parameters from updated INDEX_CONFIGS
             config = INDEX_CONFIGS[index_type]
             vis_params = {
                 "min": config["range"][0],
@@ -1659,7 +1662,8 @@ def generate_ndvi():
                 "palette": config["palette"]
             }
             
-            vis_image = index_image.visualize(**vis_params)
+            # Apply performance optimization with reproject
+            vis_image = index_image.visualize(**vis_params).reproject(crs='EPSG:4326', scale=30)
             
             # Calculate statistics
             stats = index_image.reduceRegion(
@@ -1694,7 +1698,7 @@ def generate_ndvi():
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
             
-            # Prepare response with corrected configuration
+            # Prepare response with updated configuration
             config = INDEX_CONFIGS[index_type]
             response = {
                 "success": True,
@@ -1944,7 +1948,7 @@ def generate_ndvi_timeseries():
         # Sort time series by date
         index_time_series.sort(key=lambda x: x["date"])
         
-        # Prepare enriched response with corrected index config
+        # Prepare enriched response with updated index config
         config = INDEX_CONFIGS[index_type]
         response = {
             "success": True,
@@ -2016,6 +2020,7 @@ def startup_initialization():
         print(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, NDWI, RGB)")
         print(f"✓ Wheat Winter Detection: ENABLED")
         print(f"✓ Spatial Adaptation Cache: READY")
+        print(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
     else:
         print(f"✗ GEE Preload Failed: {message}")
         print("✗ Application may not function properly")
