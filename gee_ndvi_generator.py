@@ -34,33 +34,37 @@ cache_lock = threading.Lock()
 spatial_cache = TTLCache(maxsize=500, ttl=86400)  # 24 hour TTL for spatial patterns
 spatial_cache_lock = threading.Lock()
 
-# FIXED: Scientifically correct vegetation index palettes
+# CORRECTED: Scientifically accurate vegetation index palettes for agricultural monitoring
 INDEX_CONFIGS = {
+    # Vegetation health indices: Red (stressed) → Yellow (moderate) → Green (healthy dense canopy)
     "NDVI": {
-        "range": [0, 1],
+        "range": [0, 1],  # Clamped to 0-1 to avoid blue tints from negative values
         "palette": ["#a50026", "#f46d43", "#fee08b", "#a6d96a", "#1a9850"],
-        "explanation": "Traditional vegetation health scale: red = sparse/stressed vegetation, yellow = moderate, green = healthy dense canopy."
+        "explanation": "Vegetation health scale: red = sparse/stressed vegetation, yellow = moderate growth, green = healthy dense canopy."
     },
     "EVI": {
-        "range": [0, 1],
+        "range": [0, 1],  # Clamped to 0-1 to avoid blue tints from negative values
         "palette": ["#a50026", "#f46d43", "#fee08b", "#a6d96a", "#1a9850"],
-        "explanation": "Enhanced vegetation health scale: red = sparse/stressed vegetation, yellow = moderate, green = healthy dense canopy."
+        "explanation": "Enhanced vegetation health scale: red = sparse/stressed vegetation, yellow = moderate growth, green = healthy dense canopy."
     },
     "SAVI": {
-        "range": [0, 1],
+        "range": [0, 1],  # Clamped to 0-1 to avoid blue tints from negative values
         "palette": ["#a50026", "#f46d43", "#fee08b", "#a6d96a", "#1a9850"],
-        "explanation": "Soil-adjusted vegetation scale: red = sparse/stressed vegetation, yellow = moderate, green = healthy dense canopy."
+        "explanation": "Soil-adjusted vegetation scale: red = sparse/stressed vegetation, yellow = moderate growth, green = healthy dense canopy."
     },
+    # Canopy moisture index: Yellow (dry) → Light Green (moderate) → Dark Green (moist/saturated)
     "NDMI": {
-        "range": [-1, 1],
+        "range": [-0.3, 0.7],  # Realistic range for agricultural canopy moisture in Africa
         "palette": ["#fdae61", "#ffffbf", "#a6d96a", "#1a9850"],
         "explanation": "Canopy moisture index: yellow = dry canopy, light green = moderate moisture, dark green = moist/saturated canopy."
     },
+    # Water detection index: Yellow/Green (dry/vegetated) → Blue (open water)
     "NDWI": {
-        "range": [-1, 1],
+        "range": [0, 0.5],  # Agricultural range avoiding negative values that cause confusion
         "palette": ["#fff7bc", "#c7e9b4", "#7fcdbb", "#41b6c4", "#1d91c0", "#0c2c84"],
-        "explanation": "Water detection index: blue = open water or very high moisture, yellow/green = dry or vegetated areas."
+        "explanation": "Water detection index: yellow/green = dry or vegetated areas, blue = water bodies or very high moisture."
     },
+    # True-color composite (unchanged)
     "RGB": {
         "range": [0, 255],
         "palette": [],
@@ -156,11 +160,13 @@ def get_cache_key(coords, start_date, end_date, endpoint_type, index_type="NDVI"
 
 def get_index(image, index_type):
     """
-    Calculate the specified vegetation index.
+    Calculate the specified vegetation index with proper value clamping.
     Supports: NDVI, EVI, SAVI, NDMI, NDWI
     """
     if index_type == "NDVI":
-        return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+        ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+        # Clamp negative values to 0 to avoid blue tints in visualization
+        return ndvi.where(ndvi.lt(0), 0)
 
     elif index_type == "EVI":
         nir = image.select('B8').divide(10000)
@@ -170,8 +176,8 @@ def get_index(image, index_type):
             '2.5 * ((NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1))',
             {'NIR': nir, 'RED': red, 'BLUE': blue}
         ).rename('EVI')
-        # Clip to [-1, 1] range
-        return evi.where(evi.gt(1), 1).where(evi.lt(-1), -1)
+        # Clamp to [0, 1] range to avoid blue tints
+        return evi.where(evi.gt(1), 1).where(evi.lt(0), 0)
 
     elif index_type == "SAVI":
         nir = image.select('B8').divide(10000)
@@ -180,17 +186,21 @@ def get_index(image, index_type):
             '((NIR - RED) * (1 + L)) / (NIR + RED + L)',
             {'NIR': nir, 'RED': red, 'L': 0.5}
         ).rename('SAVI')
-        return savi
+        # Clamp negative values to 0 to avoid blue tints
+        return savi.where(savi.lt(0), 0)
 
     elif index_type == "NDMI":
         return image.normalizedDifference(['B8', 'B11']).rename('NDMI')
 
     elif index_type == "NDWI":
-        return image.normalizedDifference(['B3', 'B8']).rename('NDWI')
+        ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI')
+        # Clamp to agricultural range [0, 0.5] to avoid confusion
+        return ndwi.where(ndwi.lt(0), 0).where(ndwi.gt(0.5), 0.5)
 
     else:
-        # Default fallback: NDVI
-        return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+        # Default fallback: NDVI with clamping
+        ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+        return ndvi.where(ndvi.lt(0), 0)
 
 # NEW: Calculate dynamic visualization range
 def calculate_dynamic_range(index_image, polygon, index_type):
@@ -1641,15 +1651,15 @@ def generate_ndvi():
             index_image = get_index(image, index_type)
             index_name = index_type
             
-            # Get visualization parameters from INDEX_CONFIGS with corrected range
+            # Get visualization parameters from corrected INDEX_CONFIGS
             config = INDEX_CONFIGS[index_type]
-            vis_min, vis_max = config["range"]
+            vis_params = {
+                "min": config["range"][0],
+                "max": config["range"][1],
+                "palette": config["palette"]
+            }
             
-            vis_image = index_image.visualize(
-                min=vis_min, 
-                max=vis_max, 
-                palette=config["palette"]
-            )
+            vis_image = index_image.visualize(**vis_params)
             
             # Calculate statistics
             stats = index_image.reduceRegion(
