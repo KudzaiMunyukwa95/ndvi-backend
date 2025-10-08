@@ -34,53 +34,59 @@ cache_lock = threading.Lock()
 spatial_cache = TTLCache(maxsize=500, ttl=86400)  # 24 hour TTL for spatial patterns
 spatial_cache_lock = threading.Lock()
 
-# FIXED: Index configurations with corrected palettes for water visualization
+# UPDATED: Index configurations with industry-standard palettes
 INDEX_CONFIGS = {
     "NDVI": {
         "range": [-1, 1],
         "palette": [
-            "#0000ff",  # deep water (-1.0)
-            "#4a90e2",  # shallow water (-0.5)
-            "#e0e0e0",  # bare soil / urban (0.0)
-            "#ffffbf",  # sparse vegetation (0.2)
-            "#a6d96a",  # moderate vegetation (0.5)
-            "#1a9641"   # dense healthy crops (0.8+)
+            "#0000ff",  # Deep water (NDVI < -0.2)
+            "#3288bd",  # Shallow water / wet soil
+            "#ffffbf",  # Bare / dry soil (0.0)
+            "#fee08b",  # Sparse vegetation / stressed crops (0.2)
+            "#f46d43",  # Moderate vegetation
+            "#d73027",  # Vigorous but heat-stressed (0.4–0.6)
+            "#1a9850",  # Healthy vegetation (0.6–0.8)
+            "#006837"   # Very dense vegetation (0.8–1.0)
         ],
-        "explanation": "NDVI measures vegetation greenness. Negative values show water (blue) or bare soil (grey). Values 0.2-0.4 = sparse vegetation. Values 0.6-0.9 = dense healthy crops."
+        "explanation": "Blue = water, yellow/red = stressed or bare soil, bright green = healthy vegetation."
     },
     "EVI": {
         "range": [-1, 1],
         "palette": [
-            "#0000ff",  # deep water (-1.0)
-            "#4a90e2",  # shallow water (-0.5)
-            "#e0e0e0",  # bare soil / urban (0.0)
-            "#ffffbf",  # sparse vegetation (0.2)
-            "#a6d96a",  # moderate vegetation (0.5)
-            "#1a9641"   # dense healthy crops (0.8+)
+            "#0000ff",  # Deep water (EVI < -0.2)
+            "#3288bd",  # Shallow water / wet soil
+            "#ffffbf",  # Bare / dry soil (0.0)
+            "#fee08b",  # Sparse vegetation / stressed crops (0.2)
+            "#f46d43",  # Moderate vegetation
+            "#d73027",  # Vigorous but heat-stressed (0.4–0.6)
+            "#1a9850",  # Healthy vegetation (0.6–0.8)
+            "#006837"   # Very dense vegetation (0.8–1.0)
         ],
-        "explanation": "EVI corrects for soil and atmosphere noise. Negative values show water (blue) or bare soil (grey). Especially reliable in high biomass crops like maize or tobacco."
+        "explanation": "Blue = water, yellow/red = stressed or bare soil, bright green = healthy vegetation."
     },
     "SAVI": {
         "range": [-1, 1],
         "palette": [
-            "#0000ff",  # deep water (-1.0)
-            "#4a90e2",  # shallow water (-0.5)
-            "#e0e0e0",  # bare soil / urban (0.0)
-            "#ffffbf",  # sparse vegetation (0.2)
-            "#a6d96a",  # moderate vegetation (0.5)
-            "#1a9641"   # dense healthy crops (0.8+)
+            "#0000ff",  # Deep water (SAVI < -0.2)
+            "#3288bd",  # Shallow water / wet soil
+            "#ffffbf",  # Bare / dry soil (0.0)
+            "#fee08b",  # Sparse vegetation / stressed crops (0.2)
+            "#f46d43",  # Moderate vegetation
+            "#d73027",  # Vigorous but heat-stressed (0.4–0.6)
+            "#1a9850",  # Healthy vegetation (0.6–0.8)
+            "#006837"   # Very dense vegetation (0.8–1.0)
         ],
-        "explanation": "SAVI reduces soil background effects. Negative values show water (blue) or bare soil (grey). Useful in early crop growth stages or sparse vegetation."
+        "explanation": "Blue = water, yellow/red = stressed or bare soil, bright green = healthy vegetation."
     },
     "NDMI": {
         "range": [-1, 1],
-        "palette": ["brown", "yellow", "green", "darkgreen"],
-        "explanation": "NDMI tracks crop canopy water content. High values = well-watered vegetation; low values = water stress or senescence."
+        "palette": ["#f7fcb9", "#addd8e", "#31a354", "#006837", "#08306b"],
+        "explanation": "NDMI shows crop moisture: yellow = dry, green = moist, blue = saturated canopy."
     },
     "NDWI": {
         "range": [-1, 1],
-        "palette": ["brown", "yellow", "green", "blue"],
-        "explanation": "NDWI highlights surface water. Positive values (0.2-1) = water bodies; negative values = soil or vegetation."
+        "palette": ["#ffffcc", "#a1dab4", "#41b6c4", "#2c7fb8", "#253494"],
+        "explanation": "NDWI highlights open water (deep blue) vs dry/vegetated surfaces (yellow-green)."
     },
     "RGB": {
         "range": [0, 255],
@@ -212,6 +218,50 @@ def get_index(image, index_type):
     else:
         # Default fallback: NDVI
         return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+
+# NEW: Calculate dynamic visualization range
+def calculate_dynamic_range(index_image, polygon, index_type):
+    """
+    Calculate dynamic min/max values for visualization using reduceRegion
+    """
+    try:
+        # Get actual min/max from the image
+        stats = index_image.reduceRegion(
+            reducer=ee.Reducer.minMax(),
+            geometry=polygon,
+            scale=20,
+            maxPixels=1e9
+        )
+        
+        stats_dict = stats.getInfo()
+        stat_key = index_type
+        
+        actual_min = stats_dict.get(f"{stat_key}_min")
+        actual_max = stats_dict.get(f"{stat_key}_max")
+        
+        # Get default range from config
+        config = INDEX_CONFIGS.get(index_type, {"range": [-1, 1]})
+        default_min, default_max = config["range"]
+        
+        # Use actual values if available, otherwise use defaults
+        vis_min = actual_min if actual_min is not None else default_min
+        vis_max = actual_max if actual_max is not None else default_max
+        
+        # Ensure reasonable range (avoid extremely narrow ranges)
+        if abs(vis_max - vis_min) < 0.01:
+            vis_min = default_min
+            vis_max = default_max
+        
+        print(f"Dynamic range for {index_type}: actual({actual_min:.3f}, {actual_max:.3f}) -> vis({vis_min:.3f}, {vis_max:.3f})")
+        
+        return vis_min, vis_max, actual_min, actual_max
+        
+    except Exception as e:
+        print(f"Error calculating dynamic range for {index_type}: {e}")
+        # Fall back to default range
+        config = INDEX_CONFIGS.get(index_type, {"range": [-1, 1]})
+        default_min, default_max = config["range"]
+        return default_min, default_max, None, None
 
 def smooth_ndvi_series(ndvi_data, window=SMOOTH_WINDOW):
     """Apply 3-point median smoothing to NDVI series"""
@@ -1618,11 +1668,14 @@ def generate_ndvi():
             index_image = get_index(image, index_type)
             index_name = index_type
             
+            # NEW: Calculate dynamic visualization range
+            vis_min, vis_max, actual_min, actual_max = calculate_dynamic_range(index_image, polygon, index_type)
+            
             # NEW: Get visualization parameters from INDEX_CONFIGS
             config = INDEX_CONFIGS[index_type]
             vis_image = index_image.visualize(
-                min=config["range"][0], 
-                max=config["range"][1], 
+                min=vis_min, 
+                max=vis_max, 
                 palette=config["palette"]
             )
             
@@ -1659,7 +1712,7 @@ def generate_ndvi():
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
             
-            # NEW: Prepare response with enriched format
+            # NEW: Prepare response with enriched format and dynamic range
             config = INDEX_CONFIGS[index_type]
             response = {
                 "success": True,
@@ -1675,6 +1728,11 @@ def generate_ndvi():
                 "field_cloud_percentage": field_cloud_percentage,
                 "cloud_calculation_method": "field_specific" if field_cloud_percentage is not None else "scene_level"
             }
+            
+            # Add dynamic range information for non-RGB indices
+            if index_type != "RGB":
+                response["dynamic_range"] = [vis_min, vis_max]
+                response["actual_range"] = [actual_min, actual_max] if actual_min is not None else None
             
             # Add statistics for non-RGB indices
             if index_type != "RGB":
