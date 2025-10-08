@@ -34,59 +34,32 @@ cache_lock = threading.Lock()
 spatial_cache = TTLCache(maxsize=500, ttl=86400)  # 24 hour TTL for spatial patterns
 spatial_cache_lock = threading.Lock()
 
-# UPDATED: Index configurations with industry-standard palettes
+# FIXED: Scientifically correct vegetation index palettes
 INDEX_CONFIGS = {
     "NDVI": {
-        "range": [-1, 1],
-        "palette": [
-            "#0000ff",  # Deep water (NDVI < -0.2)
-            "#3288bd",  # Shallow water / wet soil
-            "#ffffbf",  # Bare / dry soil (0.0)
-            "#fee08b",  # Sparse vegetation / stressed crops (0.2)
-            "#f46d43",  # Moderate vegetation
-            "#d73027",  # Vigorous but heat-stressed (0.4–0.6)
-            "#1a9850",  # Healthy vegetation (0.6–0.8)
-            "#006837"   # Very dense vegetation (0.8–1.0)
-        ],
-        "explanation": "Blue = water, yellow/red = stressed or bare soil, bright green = healthy vegetation."
+        "range": [0, 1],
+        "palette": ["#a50026", "#f46d43", "#fee08b", "#a6d96a", "#1a9850"],
+        "explanation": "Traditional vegetation health scale: red = sparse/stressed vegetation, yellow = moderate, green = healthy dense canopy."
     },
     "EVI": {
-        "range": [-1, 1],
-        "palette": [
-            "#0000ff",  # Deep water (EVI < -0.2)
-            "#3288bd",  # Shallow water / wet soil
-            "#ffffbf",  # Bare / dry soil (0.0)
-            "#fee08b",  # Sparse vegetation / stressed crops (0.2)
-            "#f46d43",  # Moderate vegetation
-            "#d73027",  # Vigorous but heat-stressed (0.4–0.6)
-            "#1a9850",  # Healthy vegetation (0.6–0.8)
-            "#006837"   # Very dense vegetation (0.8–1.0)
-        ],
-        "explanation": "Blue = water, yellow/red = stressed or bare soil, bright green = healthy vegetation."
+        "range": [0, 1],
+        "palette": ["#a50026", "#f46d43", "#fee08b", "#a6d96a", "#1a9850"],
+        "explanation": "Enhanced vegetation health scale: red = sparse/stressed vegetation, yellow = moderate, green = healthy dense canopy."
     },
     "SAVI": {
-        "range": [-1, 1],
-        "palette": [
-            "#0000ff",  # Deep water (SAVI < -0.2)
-            "#3288bd",  # Shallow water / wet soil
-            "#ffffbf",  # Bare / dry soil (0.0)
-            "#fee08b",  # Sparse vegetation / stressed crops (0.2)
-            "#f46d43",  # Moderate vegetation
-            "#d73027",  # Vigorous but heat-stressed (0.4–0.6)
-            "#1a9850",  # Healthy vegetation (0.6–0.8)
-            "#006837"   # Very dense vegetation (0.8–1.0)
-        ],
-        "explanation": "Blue = water, yellow/red = stressed or bare soil, bright green = healthy vegetation."
+        "range": [0, 1],
+        "palette": ["#a50026", "#f46d43", "#fee08b", "#a6d96a", "#1a9850"],
+        "explanation": "Soil-adjusted vegetation scale: red = sparse/stressed vegetation, yellow = moderate, green = healthy dense canopy."
     },
     "NDMI": {
         "range": [-1, 1],
-        "palette": ["#f7fcb9", "#addd8e", "#31a354", "#006837", "#08306b"],
-        "explanation": "NDMI shows crop moisture: yellow = dry, green = moist, blue = saturated canopy."
+        "palette": ["#fdae61", "#ffffbf", "#a6d96a", "#1a9850"],
+        "explanation": "Canopy moisture index: yellow = dry canopy, light green = moderate moisture, dark green = moist/saturated canopy."
     },
     "NDWI": {
         "range": [-1, 1],
-        "palette": ["#ffffcc", "#a1dab4", "#41b6c4", "#2c7fb8", "#253494"],
-        "explanation": "NDWI highlights open water (deep blue) vs dry/vegetated surfaces (yellow-green)."
+        "palette": ["#fff7bc", "#c7e9b4", "#7fcdbb", "#41b6c4", "#1d91c0", "#0c2c84"],
+        "explanation": "Water detection index: blue = open water or very high moisture, yellow/green = dry or vegetated areas."
     },
     "RGB": {
         "range": [0, 255],
@@ -1668,11 +1641,10 @@ def generate_ndvi():
             index_image = get_index(image, index_type)
             index_name = index_type
             
-            # NEW: Calculate dynamic visualization range
-            vis_min, vis_max, actual_min, actual_max = calculate_dynamic_range(index_image, polygon, index_type)
-            
-            # NEW: Get visualization parameters from INDEX_CONFIGS
+            # Get visualization parameters from INDEX_CONFIGS with corrected range
             config = INDEX_CONFIGS[index_type]
+            vis_min, vis_max = config["range"]
+            
             vis_image = index_image.visualize(
                 min=vis_min, 
                 max=vis_max, 
@@ -1712,7 +1684,7 @@ def generate_ndvi():
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
             
-            # NEW: Prepare response with enriched format and dynamic range
+            # Prepare response with corrected configuration
             config = INDEX_CONFIGS[index_type]
             response = {
                 "success": True,
@@ -1728,11 +1700,6 @@ def generate_ndvi():
                 "field_cloud_percentage": field_cloud_percentage,
                 "cloud_calculation_method": "field_specific" if field_cloud_percentage is not None else "scene_level"
             }
-            
-            # Add dynamic range information for non-RGB indices
-            if index_type != "RGB":
-                response["dynamic_range"] = [vis_min, vis_max]
-                response["actual_range"] = [actual_min, actual_max] if actual_min is not None else None
             
             # Add statistics for non-RGB indices
             if index_type != "RGB":
@@ -1967,7 +1934,7 @@ def generate_ndvi_timeseries():
         # Sort time series by date
         index_time_series.sort(key=lambda x: x["date"])
         
-        # NEW: Prepare enriched response with index config
+        # Prepare enriched response with corrected index config
         config = INDEX_CONFIGS[index_type]
         response = {
             "success": True,
