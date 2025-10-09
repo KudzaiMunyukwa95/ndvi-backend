@@ -1,6 +1,7 @@
 """
 Updated with real-time logging configuration for Gunicorn multi-worker deployment.
 All print() statements replaced with logger.info() for immediate DigitalOcean console visibility.
+Cloud cover calculation updated to use Google Earth Engine's standard S2_CLOUD_PROBABILITY method.
 """
 
 import os
@@ -632,134 +633,90 @@ def detect_significant_rise_fallback(sorted_data):
         logger.error(f"Error in fallback detection: {e}")
         return None
 
-def calculate_field_cloud_cover(image, polygon):
+def calculate_collection_cloud_cover(collection, polygon, start_date, end_date):
     """
-    Calculate cloud cover percentage specifically for the user's field polygon
-    Uses available Sentinel-2 cloud detection bands
+    Calculate average cloud cover across all images in collection using S2_CLOUD_PROBABILITY
     """
     try:
-        # Clip image to the field boundary
-        clipped = image.clip(polygon)
+        logger.info("Calculating collection-wide cloud cover using S2_CLOUD_PROBABILITY")
         
-        # Get available band names to determine which method to use
-        band_names = image.bandNames().getInfo()
-        logger.info(f"Available bands for cloud detection: {band_names}")
+        # Get cloud probability collection for the same time period
+        cloud_prob_collection = (
+            ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY')
+            .filterBounds(polygon)
+            .filterDate(start_date, end_date)
+        )
         
-        # Method 1: Try MSK_CLASSI_OPAQUE and MSK_CLASSI_CIRRUS (most common in S2_HARMONIZED)
-        if 'MSK_CLASSI_OPAQUE' in band_names and 'MSK_CLASSI_CIRRUS' in band_names:
-            logger.info("Using MSK_CLASSI cloud masks for field-specific calculation")
+        # Function to calculate cloud cover for each image
+        def add_cloud_cover(image):
+            system_index = image.get('system:index')
             
-            # Get cloud masks
-            opaque_clouds = clipped.select('MSK_CLASSI_OPAQUE')
-            cirrus_clouds = clipped.select('MSK_CLASSI_CIRRUS')
+            # Find matching cloud probability image
+            cloud_prob_image = cloud_prob_collection.filter(
+                ee.Filter.eq('system:index', system_index)
+            ).first()
             
-            # Combine cloud masks (both are binary: 1 = cloud, 0 = clear)
-            combined_cloud_mask = opaque_clouds.Or(cirrus_clouds)
+            # Check if cloud probability image exists
+            cloud_prob_exists = ee.Algorithms.IsEqual(cloud_prob_image, None).Not()
             
-            # Calculate total pixels
-            total_pixels = combined_cloud_mask.reduceRegion(
-                reducer=ee.Reducer.count(),
-                geometry=polygon,
-                scale=20,
-                maxPixels=1e9
-            ).get('MSK_CLASSI_OPAQUE')
+            def calculate_with_probability():
+                # Get probability band and calculate mean for the field
+                probability = cloud_prob_image.select('probability').clip(polygon)
+                mean_cloud_prob = probability.reduceRegion(
+                    reducer=ee.Reducer.mean(),
+                    geometry=polygon,
+                    scale=20,
+                    maxPixels=1e9
+                ).get('probability')
+                return mean_cloud_prob
             
-            # Calculate cloudy pixels
-            cloudy_pixels = combined_cloud_mask.reduceRegion(
-                reducer=ee.Reducer.sum(),
-                geometry=polygon,
-                scale=20,
-                maxPixels=1e9
-            ).get('MSK_CLASSI_OPAQUE')
+            def calculate_with_qa60():
+                # Fallback to QA60 method
+                qa60 = image.select('QA60').clip(polygon)
+                cloud_bit_10 = qa60.bitwiseAnd(1 << 10).gt(0)
+                cloud_bit_11 = qa60.bitwiseAnd(1 << 11).gt(0)
+                cloud_mask = cloud_bit_10.Or(cloud_bit_11)
+                
+                total_pixels = qa60.gte(0).reduceRegion(
+                    reducer=ee.Reducer.count(),
+                    geometry=polygon,
+                    scale=20,
+                    maxPixels=1e9
+                ).get('QA60')
+                
+                cloudy_pixels = cloud_mask.reduceRegion(
+                    reducer=ee.Reducer.sum(),
+                    geometry=polygon,
+                    scale=20,
+                    maxPixels=1e9
+                ).get('QA60')
+                
+                cloud_percentage = ee.Algorithms.If(
+                    ee.Number(total_pixels).gt(0),
+                    ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
+                    0
+                )
+                return cloud_percentage
             
-            # Calculate percentage
-            field_cloud_percentage = ee.Algorithms.If(
-                ee.Number(total_pixels).gt(0),
-                ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
-                0
+            # Use cloud probability if available, otherwise fallback to QA60
+            field_cloud = ee.Algorithms.If(
+                cloud_prob_exists,
+                calculate_with_probability(),
+                calculate_with_qa60()
             )
             
-            return field_cloud_percentage
-            
-        # Method 2: Try SCL band (if available)
-        elif 'SCL' in band_names:
-            logger.info("Using SCL band for field-specific calculation")
-            
-            scl = clipped.select('SCL')
-            
-            # SCL classification values:
-            # 8 = CLOUD_MEDIUM_PROBABILITY, 9 = CLOUD_HIGH_PROBABILITY, 3 = CLOUD_SHADOWS, 10 = THIN_CIRRUS
-            cloud_mask = scl.eq(8).Or(scl.eq(9)).Or(scl.eq(3)).Or(scl.eq(10))
-            
-            # Calculate total valid pixels
-            total_pixels = scl.gte(0).reduceRegion(
-                reducer=ee.Reducer.count(),
-                geometry=polygon,
-                scale=20,
-                maxPixels=1e9
-            ).get('SCL')
-            
-            # Calculate cloudy pixels
-            cloudy_pixels = cloud_mask.reduceRegion(
-                reducer=ee.Reducer.sum(),
-                geometry=polygon,
-                scale=20,
-                maxPixels=1e9
-            ).get('SCL')
-            
-            # Calculate percentage
-            field_cloud_percentage = ee.Algorithms.If(
-                ee.Number(total_pixels).gt(0),
-                ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
-                0
-            )
-            
-            return field_cloud_percentage
-            
-        # Method 3: Fallback to QA60 band
-        elif 'QA60' in band_names:
-            logger.info("Using QA60 band for field-specific calculation")
-            
-            qa60 = clipped.select('QA60')
-            
-            # QA60 bit flags: Bit 10 = Cirrus, Bit 11 = Clouds
-            cloud_bit_10 = qa60.bitwiseAnd(1 << 10).gt(0)  # Cirrus
-            cloud_bit_11 = qa60.bitwiseAnd(1 << 11).gt(0)  # Clouds
-            
-            # Combine cloud masks
-            cloud_mask = cloud_bit_10.Or(cloud_bit_11)
-            
-            # Calculate total pixels
-            total_pixels = qa60.gte(0).reduceRegion(
-                reducer=ee.Reducer.count(),
-                geometry=polygon,
-                scale=20,
-                maxPixels=1e9
-            ).get('QA60')
-            
-            # Calculate cloudy pixels
-            cloudy_pixels = cloud_mask.reduceRegion(
-                reducer=ee.Reducer.sum(),
-                geometry=polygon,
-                scale=20,
-                maxPixels=1e9
-            ).get('QA60')
-            
-            # Calculate percentage
-            field_cloud_percentage = ee.Algorithms.If(
-                ee.Number(total_pixels).gt(0),
-                ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
-                0
-            )
-            
-            return field_cloud_percentage
-            
-        else:
-            logger.warning(f"No suitable cloud detection bands found in: {band_names}")
-            return None
-            
+            return image.set('field_cloud', field_cloud)
+        
+        # Map function over collection and get mean cloud cover
+        collection_with_cloud = collection.map(add_cloud_cover)
+        
+        # Calculate average cloud cover across all images
+        avg_cloud_cover = collection_with_cloud.aggregate_mean('field_cloud')
+        
+        return avg_cloud_cover
+        
     except Exception as e:
-        logger.error(f"Error calculating field cloud cover: {e}")
+        logger.error(f"Error calculating collection cloud cover: {e}")
         return None
 
 def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
@@ -777,7 +734,7 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
     logger.info(f"Total available images: {total_size}")
     
     if total_size == 0:
-        return None, 0
+        return None, 0, None
     
     # Smart cloud filtering with progressive thresholds
     if total_size > 50:
@@ -822,7 +779,18 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
                 logger.info(f"Fallback successful: {collection_size} images with cloud < {fallback_threshold}%")
                 break
     
-    return collection, collection_size
+    # Calculate collection-wide cloud cover using new method
+    avg_cloud_cover = None
+    if collection_size > 0:
+        try:
+            avg_cloud_cover_calc = calculate_collection_cloud_cover(collection, polygon, start_date, end_date)
+            if avg_cloud_cover_calc is not None:
+                avg_cloud_cover = avg_cloud_cover_calc.getInfo()
+                logger.info(f"Collection average cloud cover: {avg_cloud_cover:.1f}%")
+        except Exception as e:
+            logger.error(f"Error calculating collection cloud cover: {e}")
+    
+    return collection, collection_size, avg_cloud_cover
 
 @app.route("/")
 def index():
@@ -1643,8 +1611,8 @@ def generate_ndvi():
         # Create Earth Engine geometry
         polygon = ee.Geometry.Polygon(coords)
 
-        # Get optimized collection
-        collection, collection_size = get_optimized_collection(polygon, start, end, limit_images=True)
+        # Get optimized collection with new cloud cover calculation
+        collection, collection_size, avg_cloud_cover = get_optimized_collection(polygon, start, end, limit_images=True)
         
         if collection is None or collection_size == 0:
             return jsonify({
@@ -1699,22 +1667,12 @@ def generate_ndvi():
         image_date = first_image.date().format("YYYY-MM-dd").getInfo()
         scene_cloud_pct = scene_cloud_percentage.getInfo()
         
-        # Calculate field-specific cloud cover
-        field_cloud_percentage = None
-        try:
-            field_cloud_calculation = calculate_field_cloud_cover(first_image, polygon)
-            if field_cloud_calculation is not None:
-                field_cloud_percentage = field_cloud_calculation.getInfo()
-                logger.info(f"Field-specific cloud cover calculated: {field_cloud_percentage}%")
-        except Exception as e:
-            logger.error(f"Field cloud cover calculation failed, using scene-level: {e}")
-            field_cloud_percentage = None
-        
         # Get map ID for tile URL
         try:
             map_id = ee.data.getMapId({"image": vis_image})
             
-            display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
+            # Use the new collection-wide cloud cover if available
+            display_cloud_percentage = avg_cloud_cover if avg_cloud_cover is not None else scene_cloud_pct
             
             # Prepare response with updated configuration
             config = INDEX_CONFIGS[index_type]
@@ -1727,10 +1685,9 @@ def generate_ndvi():
                 "explanation": config["explanation"],
                 "image_date": image_date,
                 "collection_size": collection_size,
-                "cloudy_pixel_percentage": display_cloud_percentage,
+                "cloud_cover": display_cloud_percentage,  # NEW: Standardized cloud cover using S2_CLOUD_PROBABILITY
                 "scene_cloud_percentage": scene_cloud_pct,
-                "field_cloud_percentage": field_cloud_percentage,
-                "cloud_calculation_method": "field_specific" if field_cloud_percentage is not None else "scene_level"
+                "cloud_calculation_method": "s2_cloud_probability" if avg_cloud_cover is not None else "scene_level"
             }
             
             # Add statistics for non-RGB indices
@@ -1744,13 +1701,13 @@ def generate_ndvi():
             with cache_lock:
                 cache[cache_key] = response
                 
-            logger.info(f"Successfully processed {index_type} tiles request.")
+            logger.info(f"Successfully processed {index_type} tiles request with S2_CLOUD_PROBABILITY.")
             return jsonify(response)
             
         except Exception as e:
             logger.error(f"Error getting map IDs: {e}")
             
-            display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
+            display_cloud_percentage = avg_cloud_cover if avg_cloud_cover is not None else scene_cloud_pct
             
             config = INDEX_CONFIGS[index_type]
             response = {
@@ -1761,10 +1718,9 @@ def generate_ndvi():
                 "explanation": config["explanation"],
                 "image_date": image_date,
                 "collection_size": collection_size,
-                "cloudy_pixel_percentage": display_cloud_percentage,
+                "cloud_cover": display_cloud_percentage,
                 "scene_cloud_percentage": scene_cloud_pct,
-                "field_cloud_percentage": field_cloud_percentage,
-                "cloud_calculation_method": "field_specific" if field_cloud_percentage is not None else "scene_level",
+                "cloud_calculation_method": "s2_cloud_probability" if avg_cloud_cover is not None else "scene_level",
                 "visualization_error": str(e)
             }
             
@@ -1859,7 +1815,7 @@ def generate_ndvi_timeseries():
         polygon = ee.Geometry.Polygon(coords)
 
         # Get optimized collection (don't limit for time series)
-        collection, collection_size = get_optimized_collection(polygon, start, end, limit_images=False)
+        collection, collection_size, avg_collection_cloud_cover = get_optimized_collection(polygon, start, end, limit_images=False)
         
         if collection is None or collection_size == 0:
             return jsonify({
@@ -1868,9 +1824,16 @@ def generate_ndvi_timeseries():
                 "empty_collection": True
             }), 404
         
-        # OPTIMIZED: Add index statistics to image properties
+        # Get cloud probability collection for joining
+        cloud_prob_collection = (
+            ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY')
+            .filterBounds(polygon)
+            .filterDate(start, end)
+        )
+        
+        # OPTIMIZED: Add index and cloud statistics to image properties
         def add_index_and_cloud_stats(image):
-            """Add index statistics to image properties"""
+            """Add index statistics and cloud cover to image properties using S2_CLOUD_PROBABILITY"""
             clipped = image.clip(polygon)
             
             # Calculate the selected index
@@ -1887,10 +1850,63 @@ def generate_ndvi_timeseries():
             # Get scene-level cloud cover
             scene_cloud_cover = image.get("CLOUDY_PIXEL_PERCENTAGE")
             
+            # Calculate field-specific cloud cover using S2_CLOUD_PROBABILITY
+            system_index = image.get('system:index')
+            cloud_prob_image = cloud_prob_collection.filter(
+                ee.Filter.eq('system:index', system_index)
+            ).first()
+            
+            cloud_prob_exists = ee.Algorithms.IsEqual(cloud_prob_image, None).Not()
+            
+            def calculate_with_probability():
+                probability = cloud_prob_image.select('probability').clip(polygon)
+                mean_cloud_prob = probability.reduceRegion(
+                    reducer=ee.Reducer.mean(),
+                    geometry=polygon,
+                    scale=20,
+                    maxPixels=1e9
+                ).get('probability')
+                return mean_cloud_prob
+            
+            def calculate_with_qa60():
+                qa60 = image.select('QA60').clip(polygon)
+                cloud_bit_10 = qa60.bitwiseAnd(1 << 10).gt(0)
+                cloud_bit_11 = qa60.bitwiseAnd(1 << 11).gt(0)
+                cloud_mask = cloud_bit_10.Or(cloud_bit_11)
+                
+                total_pixels = qa60.gte(0).reduceRegion(
+                    reducer=ee.Reducer.count(),
+                    geometry=polygon,
+                    scale=20,
+                    maxPixels=1e9
+                ).get('QA60')
+                
+                cloudy_pixels = cloud_mask.reduceRegion(
+                    reducer=ee.Reducer.sum(),
+                    geometry=polygon,
+                    scale=20,
+                    maxPixels=1e9
+                ).get('QA60')
+                
+                cloud_percentage = ee.Algorithms.If(
+                    ee.Number(total_pixels).gt(0),
+                    ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
+                    0
+                )
+                return cloud_percentage
+            
+            field_cloud = ee.Algorithms.If(
+                cloud_prob_exists,
+                calculate_with_probability(),
+                calculate_with_qa60()
+            )
+            
             return image.set({
                 f'{index_type.lower()}_mean': index_mean,
                 'date_formatted': image.date().format('YYYY-MM-dd'),
-                'scene_cloud_percentage': scene_cloud_cover
+                'scene_cloud_percentage': scene_cloud_cover,
+                'field_cloud_percentage': field_cloud,
+                'cloud_method': ee.Algorithms.If(cloud_prob_exists, 's2_cloud_probability', 'qa60_fallback')
             })
         
         # Map the function over the collection
@@ -1900,34 +1916,23 @@ def generate_ndvi_timeseries():
         dates_array = collection_with_stats.aggregate_array('date_formatted')
         index_array = collection_with_stats.aggregate_array(f'{index_type.lower()}_mean')
         scene_cloud_array = collection_with_stats.aggregate_array('scene_cloud_percentage')
+        field_cloud_array = collection_with_stats.aggregate_array('field_cloud_percentage')
+        cloud_method_array = collection_with_stats.aggregate_array('cloud_method')
         
-        # Get collection list for field-level cloud calculation on first few images
-        collection_list = collection_with_stats.limit(3).getInfo()['features']
-        
-        logger.info("Getting time series data in batch...")
+        logger.info("Getting time series data in batch with S2_CLOUD_PROBABILITY...")
         batch_data = ee.Dictionary({
             'dates': dates_array,
             'index_values': index_array,
-            'scene_cloud_percentages': scene_cloud_array
+            'scene_cloud_percentages': scene_cloud_array,
+            'field_cloud_percentages': field_cloud_array,
+            'cloud_methods': cloud_method_array
         }).getInfo()
         
         dates = batch_data['dates']
         index_values = batch_data['index_values']
         scene_cloud_percentages = batch_data['scene_cloud_percentages']
-        
-        # Calculate field-level cloud for first few images only
-        field_cloud_cache = {}
-        for i, img_info in enumerate(collection_list):
-            try:
-                img_id = img_info['id']
-                img = ee.Image(img_id)
-                field_cloud = calculate_field_cloud_cover(img, polygon)
-                if field_cloud is not None:
-                    field_cloud_cache[i] = field_cloud.getInfo()
-                    logger.info(f"Field cloud calculated for image {i}: {field_cloud_cache[i]}%")
-            except Exception as e:
-                logger.error(f"Error calculating field cloud for image {i}: {e}")
-                continue
+        field_cloud_percentages = batch_data['field_cloud_percentages']
+        cloud_methods = batch_data['cloud_methods']
         
         # Combine into time series data
         index_time_series = []
@@ -1937,10 +1942,11 @@ def generate_ndvi_timeseries():
             
             # Only add valid readings
             if index_value is not None:
-                field_cloud_pct = field_cloud_cache.get(i)
-                used_field_cloud = field_cloud_pct is not None
+                field_cloud_pct = field_cloud_percentages[i] if i < len(field_cloud_percentages) else None
+                cloud_method = cloud_methods[i] if i < len(cloud_methods) else 'unknown'
                 
-                display_cloud_pct = field_cloud_pct if used_field_cloud else scene_cloud_percentages[i]
+                # Use field-specific cloud cover as primary, fallback to scene
+                display_cloud_pct = field_cloud_pct if field_cloud_pct is not None else scene_cloud_percentages[i]
                 
                 # Use generic key name for compatibility (keep 'ndvi' for backwards compatibility)
                 data_point = {
@@ -1950,7 +1956,7 @@ def generate_ndvi_timeseries():
                     "cloud_percentage": display_cloud_pct,
                     "scene_cloud_percentage": scene_cloud_percentages[i],
                     "field_cloud_percentage": field_cloud_pct,
-                    "cloud_calculation_method": "field_specific" if used_field_cloud else "scene_level"
+                    "cloud_calculation_method": cloud_method
                 }
                 
                 index_time_series.append(data_point)
@@ -1966,6 +1972,10 @@ def generate_ndvi_timeseries():
         # Sort time series by date
         index_time_series.sort(key=lambda x: x["date"])
         
+        # Calculate average cloud cover across time series
+        valid_cloud_values = [item["cloud_percentage"] for item in index_time_series if item["cloud_percentage"] is not None]
+        avg_cloud_cover_ts = sum(valid_cloud_values) / len(valid_cloud_values) if valid_cloud_values else None
+        
         # Prepare enriched response with updated index config
         config = INDEX_CONFIGS[index_type]
         response = {
@@ -1975,7 +1985,9 @@ def generate_ndvi_timeseries():
             "range": config["range"],
             "explanation": config["explanation"],
             "time_series": index_time_series,
-            "collection_size": collection_size
+            "collection_size": collection_size,
+            "cloud_cover": avg_cloud_cover_ts,  # NEW: Average cloud cover using S2_CLOUD_PROBABILITY
+            "cloud_calculation_method": "s2_cloud_probability_timeseries"
         }
         
         # NEW: Add wheat emergence detection if this is a wheat field AND using NDVI
@@ -2013,7 +2025,7 @@ def generate_ndvi_timeseries():
         with cache_lock:
             cache[cache_key] = response
         
-        logger.info(f"Successfully processed {index_type} time series. {len(index_time_series)} data points returned.")
+        logger.info(f"Successfully processed {index_type} time series with S2_CLOUD_PROBABILITY. {len(index_time_series)} data points returned.")
         return jsonify(response)
 
     except Exception as e:
@@ -2039,6 +2051,7 @@ def startup_initialization():
         logger.info(f"✓ Wheat Winter Detection: ENABLED")
         logger.info(f"✓ Spatial Adaptation Cache: READY")
         logger.info(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
+        logger.info(f"✓ S2_CLOUD_PROBABILITY Method: ENABLED")
     else:
         logger.error(f"✗ GEE Preload Failed: {message}")
         logger.error("✗ Application may not function properly")
