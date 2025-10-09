@@ -1,3 +1,8 @@
+"""
+Updated with real-time logging configuration for Gunicorn multi-worker deployment.
+All print() statements replaced with logger.info() for immediate DigitalOcean console visibility.
+"""
+
 import os
 import json
 import ee
@@ -5,6 +10,8 @@ import traceback
 import hashlib
 import geohash2
 import statistics
+import logging
+import sys
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -13,6 +20,17 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from cachetools import TTLCache
 import threading
+
+# Configure real-time logging for Gunicorn multi-worker setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
+# Force stdout line buffering for immediate log output
+sys.stdout.reconfigure(line_buffering=True)
 
 # Load environment variables
 load_dotenv()
@@ -119,7 +137,7 @@ def initialize_gee_at_startup():
     
     try:
         gee_initializing = True
-        print("Initializing Google Earth Engine at startup...")
+        logger.info("Initializing Google Earth Engine at startup...")
         start_time = datetime.now()
         
         # Load service account info from environment variable
@@ -140,13 +158,13 @@ def initialize_gee_at_startup():
         init_duration = (gee_initialization_time - start_time).total_seconds()
         gee_initialized = True
         gee_initializing = False
-        print(f"GEE initialized successfully at startup in {init_duration:.2f} seconds")
+        logger.info(f"GEE initialized successfully at startup in {init_duration:.2f} seconds")
         
         return True, f"GEE initialized in {init_duration:.2f}s"
         
     except Exception as e:
         error_msg = str(e)
-        print(f"GEE initialization error at startup: {error_msg}")
+        logger.error(f"GEE initialization error at startup: {error_msg}")
         gee_initialization_error = error_msg
         gee_initialized = False
         gee_initializing = False
@@ -237,12 +255,12 @@ def calculate_dynamic_range(index_image, polygon, index_type):
             vis_min = default_min
             vis_max = default_max
         
-        print(f"Dynamic range for {index_type}: actual({actual_min:.3f}, {actual_max:.3f}) -> vis({vis_min:.3f}, {vis_max:.3f})")
+        logger.info(f"Dynamic range for {index_type}: actual({actual_min:.3f}, {actual_max:.3f}) -> vis({vis_min:.3f}, {vis_max:.3f})")
         
         return vis_min, vis_max, actual_min, actual_max
         
     except Exception as e:
-        print(f"Error calculating dynamic range for {index_type}: {e}")
+        logger.error(f"Error calculating dynamic range for {index_type}: {e}")
         # Fall back to default range
         config = INDEX_CONFIGS.get(index_type, {"range": [-1, 1]})
         default_min, default_max = config["range"]
@@ -313,7 +331,7 @@ def is_winter_season(start_date, end_date, coordinates):
         return False
         
     except Exception as e:
-        print(f"Error determining winter season: {e}")
+        logger.error(f"Error determining winter season: {e}")
         return False
 
 def get_geohash_key(coordinates, crop, season_year):
@@ -334,7 +352,7 @@ def get_geohash_key(coordinates, crop, season_year):
         return None, None
         
     except Exception as e:
-        print(f"Error generating geohash key: {e}")
+        logger.error(f"Error generating geohash key: {e}")
         return None, None
 
 def get_spatial_prior(geohash_key):
@@ -345,7 +363,7 @@ def get_spatial_prior(geohash_key):
                 return spatial_cache[geohash_key]
         return None
     except Exception as e:
-        print(f"Error getting spatial prior: {e}")
+        logger.error(f"Error getting spatial prior: {e}")
         return None
 
 def update_spatial_prior(geohash_key, emergence_date):
@@ -363,7 +381,7 @@ def update_spatial_prior(geohash_key, emergence_date):
                 spatial_cache[geohash_key] = spatial_cache[geohash_key][-10:]
                 
     except Exception as e:
-        print(f"Error updating spatial prior: {e}")
+        logger.error(f"Error updating spatial prior: {e}")
 
 def apply_spatial_nudge(candidate_date, geohash_key):
     """Apply spatial nudging if emergence is ambiguous"""
@@ -400,7 +418,7 @@ def apply_spatial_nudge(candidate_date, geohash_key):
         return candidate_date, False
         
     except Exception as e:
-        print(f"Error applying spatial nudge: {e}")
+        logger.error(f"Error applying spatial nudge: {e}")
         return candidate_date, False
 
 def detect_wheat_winter_emergence(ndvi_data, coordinates=None, force_winter_detector=False):
@@ -409,7 +427,7 @@ def detect_wheat_winter_emergence(ndvi_data, coordinates=None, force_winter_dete
     Returns emergence_date, confidence, and metadata.
     """
     try:
-        print("=== WHEAT WINTER EMERGENCE DETECTION ===")
+        logger.info("=== WHEAT WINTER EMERGENCE DETECTION ===")
         
         # Check if winter detector should be used
         if not force_winter_detector:
@@ -417,7 +435,7 @@ def detect_wheat_winter_emergence(ndvi_data, coordinates=None, force_winter_dete
             end_date = max(item['date'] for item in ndvi_data)
             
             if not is_winter_season(start_date, end_date, coordinates):
-                print("Not winter season, falling back to standard detection")
+                logger.info("Not winter season, falling back to standard detection")
                 return None, None, {}
         
         # Validate minimum data requirements
@@ -432,7 +450,7 @@ def detect_wheat_winter_emergence(ndvi_data, coordinates=None, force_winter_dete
         
         # Apply 3-point median smoothing
         smoothed_data = smooth_ndvi_series(ndvi_data, SMOOTH_WINDOW)
-        print(f"Applied smoothing to {len(smoothed_data)} points")
+        logger.info(f"Applied smoothing to {len(smoothed_data)} points")
         
         # Calculate NDVI amplitude for sanity check
         ndvi_values = [item['ndvi'] for item in smoothed_data]
@@ -486,7 +504,7 @@ def detect_wheat_winter_emergence(ndvi_data, coordinates=None, force_winter_dete
                         'ndvi_value': current_ndvi,
                         'prev_ndvi': prev_ndvi
                     })
-                    print(f"Crossing candidate: {current_date}, NDVI: {prev_ndvi:.3f} -> {current_ndvi:.3f}")
+                    logger.info(f"Crossing candidate: {current_date}, NDVI: {prev_ndvi:.3f} -> {current_ndvi:.3f}")
                     continue
             
             # Rule 2: Slope rule - rise ≥ 0.04 within ≤ 10 days from low baseline
@@ -521,16 +539,16 @@ def detect_wheat_winter_emergence(ndvi_data, coordinates=None, force_winter_dete
                                 'rise': ndvi_rise,
                                 'days': days_diff
                             })
-                            print(f"Slope candidate: {current_date}, rise: {ndvi_rise:.3f} over {days_diff} days")
+                            logger.info(f"Slope candidate: {current_date}, rise: {ndvi_rise:.3f} over {days_diff} days")
                             break
                             
                 except Exception as e:
-                    print(f"Error calculating slope: {e}")
+                    logger.error(f"Error calculating slope: {e}")
                     continue
         
         # Select best candidate (earliest valid wins)
         if not candidates:
-            print("No candidates found, falling back to significant rise heuristic")
+            logger.info("No candidates found, falling back to significant rise heuristic")
             fallback_result = detect_significant_rise_fallback(sorted_data)
             if fallback_result:
                 return fallback_result['date'], "low", {
@@ -563,13 +581,13 @@ def detect_wheat_winter_emergence(ndvi_data, coordinates=None, force_winter_dete
                     if used_prior:
                         emergence_date = nudged_date
                         cluster_prior_used = True
-                        print(f"Applied spatial nudge to: {emergence_date}")
+                        logger.info(f"Applied spatial nudge to: {emergence_date}")
                 
                 # Update spatial cache with this detection
                 update_spatial_prior(geohash_key, emergence_date)
                 
             except Exception as e:
-                print(f"Error in spatial adaptation: {e}")
+                logger.error(f"Error in spatial adaptation: {e}")
         
         metadata = {
             "qa": qa_info,
@@ -583,11 +601,11 @@ def detect_wheat_winter_emergence(ndvi_data, coordinates=None, force_winter_dete
             "candidates_found": len(candidates)
         }
         
-        print(f"Selected emergence: {emergence_date}, confidence: {confidence}")
+        logger.info(f"Selected emergence: {emergence_date}, confidence: {confidence}")
         return emergence_date, confidence, metadata
         
     except Exception as e:
-        print(f"Error in wheat winter emergence detection: {e}")
+        logger.error(f"Error in wheat winter emergence detection: {e}")
         return None, "low", {
             "qa": {
                 "valid": False,
@@ -611,7 +629,7 @@ def detect_significant_rise_fallback(sorted_data):
                 }
         return None
     except Exception as e:
-        print(f"Error in fallback detection: {e}")
+        logger.error(f"Error in fallback detection: {e}")
         return None
 
 def calculate_field_cloud_cover(image, polygon):
@@ -625,11 +643,11 @@ def calculate_field_cloud_cover(image, polygon):
         
         # Get available band names to determine which method to use
         band_names = image.bandNames().getInfo()
-        print(f"Available bands for cloud detection: {band_names}")
+        logger.info(f"Available bands for cloud detection: {band_names}")
         
         # Method 1: Try MSK_CLASSI_OPAQUE and MSK_CLASSI_CIRRUS (most common in S2_HARMONIZED)
         if 'MSK_CLASSI_OPAQUE' in band_names and 'MSK_CLASSI_CIRRUS' in band_names:
-            print("Using MSK_CLASSI cloud masks for field-specific calculation")
+            logger.info("Using MSK_CLASSI cloud masks for field-specific calculation")
             
             # Get cloud masks
             opaque_clouds = clipped.select('MSK_CLASSI_OPAQUE')
@@ -665,7 +683,7 @@ def calculate_field_cloud_cover(image, polygon):
             
         # Method 2: Try SCL band (if available)
         elif 'SCL' in band_names:
-            print("Using SCL band for field-specific calculation")
+            logger.info("Using SCL band for field-specific calculation")
             
             scl = clipped.select('SCL')
             
@@ -700,7 +718,7 @@ def calculate_field_cloud_cover(image, polygon):
             
         # Method 3: Fallback to QA60 band
         elif 'QA60' in band_names:
-            print("Using QA60 band for field-specific calculation")
+            logger.info("Using QA60 band for field-specific calculation")
             
             qa60 = clipped.select('QA60')
             
@@ -737,11 +755,11 @@ def calculate_field_cloud_cover(image, polygon):
             return field_cloud_percentage
             
         else:
-            print(f"No suitable cloud detection bands found in: {band_names}")
+            logger.warning(f"No suitable cloud detection bands found in: {band_names}")
             return None
             
     except Exception as e:
-        print(f"Error calculating field cloud cover: {e}")
+        logger.error(f"Error calculating field cloud cover: {e}")
         return None
 
 def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
@@ -756,7 +774,7 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
     
     # Check collection size first
     total_size = base_collection.size().getInfo()
-    print(f"Total available images: {total_size}")
+    logger.info(f"Total available images: {total_size}")
     
     if total_size == 0:
         return None, 0
@@ -787,11 +805,11 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
         collection = collection.limit(max_images)
     
     collection_size = collection.size().getInfo()
-    print(f"Filtered collection size: {collection_size} (cloud < {cloud_threshold}%)")
+    logger.info(f"Filtered collection size: {collection_size} (cloud < {cloud_threshold}%)")
     
     # Fallback if no images after filtering
     if collection_size == 0:
-        print("No images found with initial cloud threshold, trying fallback...")
+        logger.info("No images found with initial cloud threshold, trying fallback...")
         for fallback_threshold in [50, 80]:
             collection = (
                 base_collection
@@ -801,7 +819,7 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
             )
             collection_size = collection.size().getInfo()
             if collection_size > 0:
-                print(f"Fallback successful: {collection_size} images with cloud < {fallback_threshold}%")
+                logger.info(f"Fallback successful: {collection_size} images with cloud < {fallback_threshold}%")
                 break
     
     return collection, collection_size
@@ -892,7 +910,7 @@ def warmup():
                 }), 500
         
         # Test a simple Sentinel-2 operation to warm up
-        print("Warming up with test Sentinel-2 query...")
+        logger.info("Warming up with test Sentinel-2 query...")
         start_time = datetime.now()
         
         # Simple test query
@@ -906,7 +924,7 @@ def warmup():
         test_info = test_collection.getInfo()
         
         warmup_duration = (datetime.now() - start_time).total_seconds()
-        print(f"Warmup completed in {warmup_duration:.2f} seconds")
+        logger.info(f"Warmup completed in {warmup_duration:.2f} seconds")
         
         return jsonify({
             "success": True,
@@ -919,7 +937,7 @@ def warmup():
         })
         
     except Exception as e:
-        print(f"Warmup error: {str(e)}")
+        logger.error(f"Warmup error: {str(e)}")
         return jsonify({
             "success": False,
             "message": f"Warmup failed: {str(e)}",
@@ -932,17 +950,17 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
     Detects the FIRST emergence event and estimates the primary planting window.
     Now includes wheat-specific winter detection path.
     """
-    print(f"=== PRIMARY EMERGENCE DETECTION for {crop_type} ===")
+    logger.info(f"=== PRIMARY EMERGENCE DETECTION for {crop_type} ===")
     
     # NEW: Wheat winter detection path
     if crop_type.lower() == 'wheat':
-        print("Attempting wheat-specific winter detection...")
+        logger.info("Attempting wheat-specific winter detection...")
         wheat_emergence, wheat_confidence, wheat_metadata = detect_wheat_winter_emergence(
             ndvi_data, coordinates, force_winter_detector
         )
         
         if wheat_emergence:
-            print(f"Wheat winter detector succeeded: {wheat_emergence}")
+            logger.info(f"Wheat winter detector succeeded: {wheat_emergence}")
             
             # Calculate planting window (keep 5-day width)
             emergence_window = EMERGENCE_WINDOWS.get(crop_type, DEFAULT_EMERGENCE_WINDOW)
@@ -1001,7 +1019,7 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
             
             return result
         else:
-            print("Wheat winter detector failed, falling back to standard detection")
+            logger.info("Wheat winter detector failed, falling back to standard detection")
     
     # EXISTING: Standard emergence detection for non-wheat crops or wheat fallback
     sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
@@ -1014,7 +1032,7 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
         if sorted_ndvi[i]['ndvi'] < EMERGENCE_THRESHOLD and sorted_ndvi[i + 1]['ndvi'] >= EMERGENCE_THRESHOLD:
             emergence_date = sorted_ndvi[i + 1]['date']
             emergence_index = i + 1
-            print(f"Primary emergence detected on {emergence_date} at index {emergence_index}")
+            logger.info(f"Primary emergence detected on {emergence_date} at index {emergence_index}")
             break
     
     # If no clear threshold crossing, look for significant NDVI rise from low values
@@ -1027,7 +1045,7 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
             if current_ndvi < 0.15 and next_ndvi > current_ndvi + 0.05:
                 emergence_date = sorted_ndvi[i + 1]['date']
                 emergence_index = i + 1
-                print(f"Alternative emergence detection on {emergence_date} - significant rise from low NDVI")
+                logger.info(f"Alternative emergence detection on {emergence_date} - significant rise from low NDVI")
                 break
     
     # Check if crop was pre-established (all values already high)
@@ -1091,7 +1109,7 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
     planting_window_end = (emergence_date_obj - timedelta(days=emergence_window[0])).strftime('%Y-%m-%d')
     planting_window_start = (emergence_date_obj - timedelta(days=emergence_window[1])).strftime('%Y-%m-%d')
     
-    print(f"Calculated planting window: {planting_window_start} to {planting_window_end}")
+    logger.info(f"Calculated planting window: {planting_window_start} to {planting_window_end}")
     
     # For rainfed fields, check for rainfall events in the planting window
     rainfall_adjusted_planting = None
@@ -1110,13 +1128,13 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
                     event.get('rainfall', 0) >= SIGNIFICANT_RAINFALL):
                     significant_rainfall_events.append(event)
             except Exception as e:
-                print(f"Error processing rainfall event: {e}")
+                logger.error(f"Error processing rainfall event: {e}")
                 continue
         
         if significant_rainfall_events:
             significant_rainfall_events.sort(key=lambda x: x['date'])
             rainfall_adjusted_planting = significant_rainfall_events[0]['date']
-            print(f"Found rainfall-adjusted planting date: {rainfall_adjusted_planting}")
+            logger.info(f"Found rainfall-adjusted planting date: {rainfall_adjusted_planting}")
     
     # Determine confidence level
     confidence = "medium"
@@ -1237,7 +1255,7 @@ def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_thr
                     'rainfall': event['rainfall']
                 })
         except (KeyError, TypeError) as e:
-            print(f"Error processing rainfall event: {e}")
+            logger.error(f"Error processing rainfall event: {e}")
             continue
     
     if not significant_rainfall_events:
@@ -1258,7 +1276,7 @@ def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_thr
                 if rain_date <= ndvi_date <= response_end_date:
                     window_ndvi_readings.append(ndvi_point)
             except (ValueError, KeyError) as e:
-                print(f"Error processing NDVI date: {e}")
+                logger.error(f"Error processing NDVI date: {e}")
                 continue
         
         if window_ndvi_readings and len(window_ndvi_readings) >= 2:
@@ -1401,7 +1419,7 @@ def generate_agronomic_report():
                             'total_change': ndvi_diff
                         })
                 except Exception as e:
-                    print(f"Error calculating NDVI change rate: {e}")
+                    logger.error(f"Error calculating NDVI change rate: {e}")
 
         # Format NDVI change rate data
         ndvi_change_formatted = "No data"
@@ -1417,7 +1435,7 @@ def generate_agronomic_report():
                 ])
         
         # MODIFIED: Primary emergence analysis with wheat winter support
-        print("=== STARTING PRIMARY EMERGENCE ANALYSIS ===")
+        logger.info("=== STARTING PRIMARY EMERGENCE ANALYSIS ===")
         
         # Step 1: Detect PRIMARY emergence and calculate planting window (now with wheat support)
         primary_results = detect_primary_emergence_and_planting(
@@ -1429,7 +1447,7 @@ def generate_agronomic_report():
             force_winter_detector=force_winter_detector  # NEW: override flag
         )
         
-        print(f"Primary emergence results: {primary_results}")
+        logger.info(f"Primary emergence results: {primary_results}")
         
         # Step 2: Detect SECONDARY tillage/replanting events
         tillage_results = detect_tillage_replanting_events(
@@ -1437,7 +1455,7 @@ def generate_agronomic_report():
             primary_emergence_date=primary_results.get("emergenceDate")
         )
         
-        print(f"Tillage detection results: {tillage_results}")
+        logger.info(f"Tillage detection results: {tillage_results}")
         
         # Step 3: Combine primary and secondary analysis for final message
         planting_window_text = primary_results["message"]
@@ -1456,7 +1474,7 @@ def generate_agronomic_report():
             
             if avg_cloud_cover is not None and avg_cloud_cover < 20 and ndvi_std_dev < 0.15:
                 confidence_level = "high"
-                print(f"Boosted confidence to high based on data quality")
+                logger.info(f"Boosted confidence to high based on data quality")
         
         # Create appropriate prompts based on planting detection
         if primary_results.get("no_planting_detected"):
@@ -1495,7 +1513,7 @@ Keep it simple and actionable for farmers."""
 
         # Call OpenAI API
         try:
-            print(f"Sending request to generate insight for field: {field_name}")
+            logger.info(f"Sending request to generate insight for field: {field_name}")
             
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -1556,7 +1574,7 @@ Keep it simple and actionable for farmers."""
             return jsonify(response_data)
             
         except Exception as e:
-            print(f"Insight generation error: {str(e)}")
+            logger.error(f"Insight generation error: {str(e)}")
             return jsonify({
                 "success": False,
                 "error": f"Insight generation error: {str(e)}",
@@ -1566,8 +1584,8 @@ Keep it simple and actionable for farmers."""
     except Exception as e:
         error_message = str(e)
         stack_trace = traceback.format_exc()
-        print(f"Error generating agronomic report: {error_message}")
-        print(f"Stack trace: {stack_trace}")
+        logger.error(f"Error generating agronomic report: {error_message}")
+        logger.error(f"Stack trace: {stack_trace}")
         
         return jsonify({
             "success": False,
@@ -1616,11 +1634,11 @@ def generate_ndvi():
         cache_key = get_cache_key(coords, start, end, "ndvi_tiles", index_type)
         with cache_lock:
             if cache_key in cache:
-                print(f"Cache hit for {index_type} tiles request")
+                logger.info(f"Cache hit for {index_type} tiles request")
                 return jsonify(cache[cache_key])
         
         # Log incoming request
-        print(f"Processing {index_type} tiles request: start={start}, end={end}, coords length={len(coords)}")
+        logger.info(f"Processing {index_type} tiles request: start={start}, end={end}, coords length={len(coords)}")
         
         # Create Earth Engine geometry
         polygon = ee.Geometry.Polygon(coords)
@@ -1687,9 +1705,9 @@ def generate_ndvi():
             field_cloud_calculation = calculate_field_cloud_cover(first_image, polygon)
             if field_cloud_calculation is not None:
                 field_cloud_percentage = field_cloud_calculation.getInfo()
-                print(f"Field-specific cloud cover calculated: {field_cloud_percentage}%")
+                logger.info(f"Field-specific cloud cover calculated: {field_cloud_percentage}%")
         except Exception as e:
-            print(f"Field cloud cover calculation failed, using scene-level: {e}")
+            logger.error(f"Field cloud cover calculation failed, using scene-level: {e}")
             field_cloud_percentage = None
         
         # Get map ID for tile URL
@@ -1726,11 +1744,11 @@ def generate_ndvi():
             with cache_lock:
                 cache[cache_key] = response
                 
-            print(f"Successfully processed {index_type} tiles request.")
+            logger.info(f"Successfully processed {index_type} tiles request.")
             return jsonify(response)
             
         except Exception as e:
-            print(f"Error getting map IDs: {e}")
+            logger.error(f"Error getting map IDs: {e}")
             
             display_cloud_percentage = field_cloud_percentage if field_cloud_percentage is not None else scene_cloud_pct
             
@@ -1763,8 +1781,8 @@ def generate_ndvi():
     except Exception as e:
         error_message = str(e)
         stack_trace = traceback.format_exc()
-        print(f"Error in GEE processing: {error_message}")
-        print(f"Stack trace: {stack_trace}")
+        logger.error(f"Error in GEE processing: {error_message}")
+        logger.error(f"Stack trace: {stack_trace}")
         
         return jsonify({
             "success": False, 
@@ -1815,12 +1833,12 @@ def generate_ndvi_timeseries():
         cache_key = get_cache_key(coords, start, end, "ndvi_timeseries", index_type)
         with cache_lock:
             if cache_key in cache:
-                print(f"Cache hit for {index_type} timeseries request")
+                logger.info(f"Cache hit for {index_type} timeseries request")
                 cached_response = cache[cache_key]
                 
                 # Add wheat emergence detection if needed (only for NDVI)
                 if index_type == "NDVI" and crop.lower() == 'wheat' and "emergence_date" not in cached_response:
-                    print("Adding wheat emergence detection to cached response")
+                    logger.info("Adding wheat emergence detection to cached response")
                     try:
                         wheat_emergence, wheat_confidence, wheat_metadata = detect_wheat_winter_emergence(
                             cached_response["time_series"], coords, force_winter_detector
@@ -1830,12 +1848,12 @@ def generate_ndvi_timeseries():
                             cached_response["emergence_confidence"] = wheat_confidence
                             cached_response.update(wheat_metadata)
                     except Exception as e:
-                        print(f"Error adding wheat detection: {e}")
+                        logger.error(f"Error adding wheat detection: {e}")
                 
                 return jsonify(cached_response)
         
         # Log incoming request
-        print(f"Processing {index_type} time series: start={start}, end={end}, crop={crop}")
+        logger.info(f"Processing {index_type} time series: start={start}, end={end}, crop={crop}")
         
         # Create Earth Engine geometry  
         polygon = ee.Geometry.Polygon(coords)
@@ -1886,7 +1904,7 @@ def generate_ndvi_timeseries():
         # Get collection list for field-level cloud calculation on first few images
         collection_list = collection_with_stats.limit(3).getInfo()['features']
         
-        print("Getting time series data in batch...")
+        logger.info("Getting time series data in batch...")
         batch_data = ee.Dictionary({
             'dates': dates_array,
             'index_values': index_array,
@@ -1906,9 +1924,9 @@ def generate_ndvi_timeseries():
                 field_cloud = calculate_field_cloud_cover(img, polygon)
                 if field_cloud is not None:
                     field_cloud_cache[i] = field_cloud.getInfo()
-                    print(f"Field cloud calculated for image {i}: {field_cloud_cache[i]}%")
+                    logger.info(f"Field cloud calculated for image {i}: {field_cloud_cache[i]}%")
             except Exception as e:
-                print(f"Error calculating field cloud for image {i}: {e}")
+                logger.error(f"Error calculating field cloud for image {i}: {e}")
                 continue
         
         # Combine into time series data
@@ -1962,7 +1980,7 @@ def generate_ndvi_timeseries():
         
         # NEW: Add wheat emergence detection if this is a wheat field AND using NDVI
         if index_type == "NDVI" and crop.lower() == 'wheat':
-            print("Running wheat emergence detection on time series...")
+            logger.info("Running wheat emergence detection on time series...")
             try:
                 wheat_emergence, wheat_confidence, wheat_metadata = detect_wheat_winter_emergence(
                     index_time_series, coords, force_winter_detector
@@ -1981,28 +1999,28 @@ def generate_ndvi_timeseries():
                     if "spatial_adaptation" in wheat_metadata:
                         response["spatial_adaptation"] = wheat_metadata["spatial_adaptation"]
                         
-                    print(f"Wheat emergence detected: {wheat_emergence} (confidence: {wheat_confidence})")
+                    logger.info(f"Wheat emergence detected: {wheat_emergence} (confidence: {wheat_confidence})")
                 else:
-                    print("No wheat emergence detected")
+                    logger.info("No wheat emergence detected")
                     if "qa" in wheat_metadata:
                         response["qa"] = wheat_metadata["qa"]
                         
             except Exception as e:
-                print(f"Error in wheat emergence detection: {e}")
+                logger.error(f"Error in wheat emergence detection: {e}")
                 response["wheat_detection_error"] = str(e)
         
         # Cache the response
         with cache_lock:
             cache[cache_key] = response
         
-        print(f"Successfully processed {index_type} time series. {len(index_time_series)} data points returned.")
+        logger.info(f"Successfully processed {index_type} time series. {len(index_time_series)} data points returned.")
         return jsonify(response)
 
     except Exception as e:
         error_message = str(e)
         stack_trace = traceback.format_exc()
-        print(f"Error in GEE time series processing: {error_message}")
-        print(f"Stack trace: {stack_trace}")
+        logger.error(f"Error in GEE time series processing: {error_message}")
+        logger.error(f"Stack trace: {stack_trace}")
         
         return jsonify({
             "success": False, 
@@ -2013,17 +2031,17 @@ def generate_ndvi_timeseries():
 # NEW: Pre-initialization at startup for preload mode
 def startup_initialization():
     """Called during app startup when using --preload"""
-    print("=== STARTUP INITIALIZATION (PRELOAD MODE) ===")
+    logger.info("=== STARTUP INITIALIZATION (PRELOAD MODE) ===")
     success, message = initialize_gee_at_startup()
     if success:
-        print(f"✓ GEE Preload Success: {message}")
-        print(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, NDWI, RGB)")
-        print(f"✓ Wheat Winter Detection: ENABLED")
-        print(f"✓ Spatial Adaptation Cache: READY")
-        print(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
+        logger.info(f"✓ GEE Preload Success: {message}")
+        logger.info(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, NDWI, RGB)")
+        logger.info(f"✓ Wheat Winter Detection: ENABLED")
+        logger.info(f"✓ Spatial Adaptation Cache: READY")
+        logger.info(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
     else:
-        print(f"✗ GEE Preload Failed: {message}")
-        print("✗ Application may not function properly")
+        logger.error(f"✗ GEE Preload Failed: {message}")
+        logger.error("✗ Application may not function properly")
 
 # Initialize GEE immediately when module loads (for preload mode)
 startup_initialization()
