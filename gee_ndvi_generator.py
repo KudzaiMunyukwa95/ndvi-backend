@@ -652,14 +652,17 @@ def calculate_collection_cloud_cover(collection, polygon, start_date, end_date):
             system_index = image.get('system:index')
             
             # Find matching cloud probability image
-            cloud_prob_image = cloud_prob_collection.filter(
+            cloud_prob_filtered = cloud_prob_collection.filter(
                 ee.Filter.eq('system:index', system_index)
-            ).first()
+            )
             
-            # Check if cloud probability image exists
-            cloud_prob_exists = ee.Algorithms.IsEqual(cloud_prob_image, None).Not()
+            # Check if any cloud probability images exist for this index
+            cloud_prob_size = cloud_prob_filtered.size()
+            cloud_prob_exists = cloud_prob_size.gt(0)
             
             def calculate_with_probability():
+                # Get the first (and should be only) matching cloud probability image
+                cloud_prob_image = cloud_prob_filtered.first()
                 # Get probability band and calculate mean for the field
                 probability = cloud_prob_image.select('probability').clip(polygon)
                 mean_cloud_prob = probability.reduceRegion(
@@ -672,31 +675,38 @@ def calculate_collection_cloud_cover(collection, polygon, start_date, end_date):
             
             def calculate_with_qa60():
                 # Fallback to QA60 method
-                qa60 = image.select('QA60').clip(polygon)
-                cloud_bit_10 = qa60.bitwiseAnd(1 << 10).gt(0)
-                cloud_bit_11 = qa60.bitwiseAnd(1 << 11).gt(0)
-                cloud_mask = cloud_bit_10.Or(cloud_bit_11)
+                band_names = image.bandNames()
+                qa60_exists = band_names.contains('QA60')
                 
-                total_pixels = qa60.gte(0).reduceRegion(
-                    reducer=ee.Reducer.count(),
-                    geometry=polygon,
-                    scale=20,
-                    maxPixels=1e9
-                ).get('QA60')
+                def qa60_calculation():
+                    qa60 = image.select('QA60').clip(polygon)
+                    cloud_bit_10 = qa60.bitwiseAnd(1 << 10).gt(0)
+                    cloud_bit_11 = qa60.bitwiseAnd(1 << 11).gt(0)
+                    cloud_mask = cloud_bit_10.Or(cloud_bit_11)
+                    
+                    total_pixels = qa60.gte(0).reduceRegion(
+                        reducer=ee.Reducer.count(),
+                        geometry=polygon,
+                        scale=20,
+                        maxPixels=1e9
+                    ).get('QA60')
+                    
+                    cloudy_pixels = cloud_mask.reduceRegion(
+                        reducer=ee.Reducer.sum(),
+                        geometry=polygon,
+                        scale=20,
+                        maxPixels=1e9
+                    ).get('QA60')
+                    
+                    cloud_percentage = ee.Algorithms.If(
+                        ee.Number(total_pixels).gt(0),
+                        ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
+                        0
+                    )
+                    return cloud_percentage
                 
-                cloudy_pixels = cloud_mask.reduceRegion(
-                    reducer=ee.Reducer.sum(),
-                    geometry=polygon,
-                    scale=20,
-                    maxPixels=1e9
-                ).get('QA60')
-                
-                cloud_percentage = ee.Algorithms.If(
-                    ee.Number(total_pixels).gt(0),
-                    ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
-                    0
-                )
-                return cloud_percentage
+                # Return QA60 calculation if QA60 exists, otherwise return 0
+                return ee.Algorithms.If(qa60_exists, qa60_calculation(), 0)
             
             # Use cloud probability if available, otherwise fallback to QA60
             field_cloud = ee.Algorithms.If(
@@ -1852,13 +1862,15 @@ def generate_ndvi_timeseries():
             
             # Calculate field-specific cloud cover using S2_CLOUD_PROBABILITY
             system_index = image.get('system:index')
-            cloud_prob_image = cloud_prob_collection.filter(
+            cloud_prob_filtered = cloud_prob_collection.filter(
                 ee.Filter.eq('system:index', system_index)
-            ).first()
+            )
             
-            cloud_prob_exists = ee.Algorithms.IsEqual(cloud_prob_image, None).Not()
+            cloud_prob_size = cloud_prob_filtered.size()
+            cloud_prob_exists = cloud_prob_size.gt(0)
             
             def calculate_with_probability():
+                cloud_prob_image = cloud_prob_filtered.first()
                 probability = cloud_prob_image.select('probability').clip(polygon)
                 mean_cloud_prob = probability.reduceRegion(
                     reducer=ee.Reducer.mean(),
@@ -1869,31 +1881,37 @@ def generate_ndvi_timeseries():
                 return mean_cloud_prob
             
             def calculate_with_qa60():
-                qa60 = image.select('QA60').clip(polygon)
-                cloud_bit_10 = qa60.bitwiseAnd(1 << 10).gt(0)
-                cloud_bit_11 = qa60.bitwiseAnd(1 << 11).gt(0)
-                cloud_mask = cloud_bit_10.Or(cloud_bit_11)
+                band_names = image.bandNames()
+                qa60_exists = band_names.contains('QA60')
                 
-                total_pixels = qa60.gte(0).reduceRegion(
-                    reducer=ee.Reducer.count(),
-                    geometry=polygon,
-                    scale=20,
-                    maxPixels=1e9
-                ).get('QA60')
+                def qa60_calculation():
+                    qa60 = image.select('QA60').clip(polygon)
+                    cloud_bit_10 = qa60.bitwiseAnd(1 << 10).gt(0)
+                    cloud_bit_11 = qa60.bitwiseAnd(1 << 11).gt(0)
+                    cloud_mask = cloud_bit_10.Or(cloud_bit_11)
+                    
+                    total_pixels = qa60.gte(0).reduceRegion(
+                        reducer=ee.Reducer.count(),
+                        geometry=polygon,
+                        scale=20,
+                        maxPixels=1e9
+                    ).get('QA60')
+                    
+                    cloudy_pixels = cloud_mask.reduceRegion(
+                        reducer=ee.Reducer.sum(),
+                        geometry=polygon,
+                        scale=20,
+                        maxPixels=1e9
+                    ).get('QA60')
+                    
+                    cloud_percentage = ee.Algorithms.If(
+                        ee.Number(total_pixels).gt(0),
+                        ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
+                        0
+                    )
+                    return cloud_percentage
                 
-                cloudy_pixels = cloud_mask.reduceRegion(
-                    reducer=ee.Reducer.sum(),
-                    geometry=polygon,
-                    scale=20,
-                    maxPixels=1e9
-                ).get('QA60')
-                
-                cloud_percentage = ee.Algorithms.If(
-                    ee.Number(total_pixels).gt(0),
-                    ee.Number(cloudy_pixels).divide(ee.Number(total_pixels)).multiply(100),
-                    0
-                )
-                return cloud_percentage
+                return ee.Algorithms.If(qa60_exists, qa60_calculation(), 0)
             
             field_cloud = ee.Algorithms.If(
                 cloud_prob_exists,
