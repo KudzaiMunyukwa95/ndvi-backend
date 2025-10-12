@@ -2,6 +2,7 @@
 Updated with real-time logging configuration for Gunicorn multi-worker deployment.
 All print() statements replaced with logger.info() for immediate DigitalOcean console visibility.
 Cloud cover calculation updated to use Google Earth Engine's standard S2_CLOUD_PROBABILITY method.
+Authentication middleware integrated for API security.
 """
 
 import os
@@ -21,6 +22,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from cachetools import TTLCache
 import threading
+from middleware.auth import require_auth, log_authentication_status
 
 # Configure real-time logging for Gunicorn multi-worker setup
 logging.basicConfig(
@@ -41,6 +43,9 @@ CORS(app)
 
 # Enable GZIP compression
 Compress(app)
+
+# Log authentication status
+log_authentication_status()
 
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -865,6 +870,7 @@ def ping():
     })
 
 @app.route("/api/warmup", methods=["POST"])
+@require_auth
 def warmup():
     """Dedicated warmup endpoint"""
     try:
@@ -1305,6 +1311,7 @@ def calculate_std_dev(values):
     return variance ** 0.5
 
 @app.route("/api/agronomic_insight", methods=["POST"])
+@require_auth
 def generate_agronomic_report():
     try:
         if not gee_initialized:
@@ -1572,6 +1579,7 @@ Keep it simple and actionable for farmers."""
         }), 500
 
 @app.route("/api/gee_ndvi", methods=["POST"])
+@require_auth
 def generate_ndvi():
     try:
         if not gee_initialized:
@@ -1757,6 +1765,7 @@ def generate_ndvi():
         }), 500
 
 @app.route("/api/gee_ndvi_timeseries", methods=["POST"])
+@require_auth
 def generate_ndvi_timeseries():
     try:
         if not gee_initialized:
@@ -2070,6 +2079,7 @@ def startup_initialization():
         logger.info(f"✓ Spatial Adaptation Cache: READY")
         logger.info(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
         logger.info(f"✓ S2_CLOUD_PROBABILITY Method: ENABLED")
+        logger.info(f"✓ Authentication Middleware: LOADED")
     else:
         logger.error(f"✗ GEE Preload Failed: {message}")
         logger.error("✗ Application may not function properly")
