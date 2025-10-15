@@ -1640,7 +1640,7 @@ def generate_ndvi():
             }), 404
         
         # Use mosaic instead of median for better performance
-        image = collection.mosaic().clip(polygon)
+        image = collection.median().clip(polygon)
         first_image = collection.first()
         
         # Handle RGB vs Index calculation
