@@ -1667,7 +1667,7 @@ def generate_ndvi():
             }
             
             # Apply performance optimization with reproject
-            vis_image = index_image.visualize(**vis_params).reproject(crs='EPSG:4326', scale=30)
+            vis_image = index_image.visualize(**vis_params).reproject(crs='EPSG:4326', scale=10)
             
             # Calculate statistics
             stats = index_image.reduceRegion(
