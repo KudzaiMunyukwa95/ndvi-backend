@@ -3,6 +3,7 @@ Updated with real-time logging configuration for Gunicorn multi-worker deploymen
 All print() statements replaced with logger.info() for immediate DigitalOcean console visibility.
 Cloud cover calculation updated to use Google Earth Engine's standard S2_CLOUD_PROBABILITY method.
 Authentication middleware integrated for API security.
+CORS configuration fixed for production deployment.
 """
 
 import os
@@ -39,7 +40,16 @@ sys.stdout.reconfigure(line_buffering=True)
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+
+# PRODUCTION CORS CONFIGURATION - FIXED
+CORS(app, 
+    origins=["https://yieldera.co.zw", "https://www.yieldera.co.zw", "http://localhost:3000", "http://127.0.0.1:3000"],
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "Cache-Control"],
+    supports_credentials=True,
+    expose_headers=["Content-Type", "Authorization"],
+    max_age=3600
+)
 
 # Enable GZIP compression
 Compress(app)
@@ -127,6 +137,34 @@ gee_initialization_time = None
 gee_initialized = False
 gee_initialization_error = None
 gee_initializing = False
+
+# PRODUCTION: Add additional CORS handling for preflight requests
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        response.headers.add("Access-Control-Allow-Origin", request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Headers', "Content-Type,Authorization,Accept,Cache-Control")
+        response.headers.add('Access-Control-Allow-Methods', "GET,PUT,POST,DELETE,OPTIONS")
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response
+
+@app.after_request
+def after_request(response):
+    # Add CORS headers to all responses
+    origin = request.headers.get('Origin')
+    if origin in ["https://yieldera.co.zw", "https://www.yieldera.co.zw", "http://localhost:3000", "http://127.0.0.1:3000"]:
+        response.headers.add('Access-Control-Allow-Origin', origin)
+    else:
+        response.headers.add('Access-Control-Allow-Origin', '*')
+    
+    response.headers.add('Access-Control-Allow-Headers', "Content-Type,Authorization,Accept,Cache-Control")
+    response.headers.add('Access-Control-Allow-Methods', "GET,PUT,POST,DELETE,OPTIONS")
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    response.headers.add('Access-Control-Expose-Headers', 'Content-Type,Authorization')
+    
+    return response
 
 def initialize_gee_at_startup():
     """Initialize Google Earth Engine once at server startup"""
@@ -825,7 +863,8 @@ def health_check():
                 "gee_initializing": True,
                 "cache_size": len(cache),
                 "spatial_cache_size": len(spatial_cache),
-                "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+                "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"],
+                "cors_enabled": True
             }), 200
         
         if not gee_initialized:
@@ -834,7 +873,8 @@ def health_check():
                 "message": f"GEE not initialized: {gee_initialization_error}",
                 "timestamp": datetime.now().isoformat(),
                 "gee_initialized": False,
-                "gee_initializing": False
+                "gee_initializing": False,
+                "cors_enabled": True
             }), 500
         
         return jsonify({
@@ -846,7 +886,8 @@ def health_check():
             "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None,
             "cache_size": len(cache),
             "spatial_cache_size": len(spatial_cache),
-            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"],
+            "cors_enabled": True
         })
         
     except Exception as e:
@@ -855,7 +896,8 @@ def health_check():
             "message": f"Health check failed: {str(e)}",
             "timestamp": datetime.now().isoformat(),
             "gee_initialized": gee_initialized,
-            "gee_initializing": gee_initializing
+            "gee_initializing": gee_initializing,
+            "cors_enabled": True
         }), 500
 
 @app.route("/api/ping", methods=["GET"])
@@ -866,7 +908,8 @@ def ping():
         "message": "Pong",
         "timestamp": datetime.now().isoformat(),
         "cache_size": len(cache),
-        "spatial_cache_size": len(spatial_cache)
+        "spatial_cache_size": len(spatial_cache),
+        "cors_enabled": True
     })
 
 @app.route("/api/warmup", methods=["POST"])
@@ -2080,6 +2123,7 @@ def startup_initialization():
         logger.info(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
         logger.info(f"✓ S2_CLOUD_PROBABILITY Method: ENABLED")
         logger.info(f"✓ Authentication Middleware: LOADED")
+        logger.info(f"✓ Production CORS Configuration: ENABLED")
     else:
         logger.error(f"✗ GEE Preload Failed: {message}")
         logger.error("✗ Application may not function properly")
