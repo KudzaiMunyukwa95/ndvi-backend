@@ -3,6 +3,7 @@ Updated with real-time logging configuration for Gunicorn multi-worker deploymen
 All print() statements replaced with logger.info() for immediate DigitalOcean console visibility.
 Cloud cover calculation updated to use Google Earth Engine's standard S2_CLOUD_PROBABILITY method.
 Authentication middleware integrated for API security.
+Performance timing logs added for deployment speed measurement.
 """
 
 import os
@@ -14,6 +15,7 @@ import geohash2
 import statistics
 import logging
 import sys
+import time
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -1618,6 +1620,9 @@ def gee_ndvi_options():
 @app.route("/api/gee_ndvi", methods=["POST"])
 @require_auth
 def generate_ndvi():
+    # [TIMING] Start total request timer
+    request_start_time = time.perf_counter()
+    
     try:
         if not gee_initialized:
             return jsonify({
@@ -1632,6 +1637,10 @@ def generate_ndvi():
         start = data.get("startDate")
         end = data.get("endDate")
         index_type = data.get("index_type", "NDVI") # NEW: Get index type, default to NDVI
+        
+        # [TIMING] Log request parameters
+        coords_summary = f"[{len(coords[0]) if coords and len(coords) > 0 else 0} points]"
+        logger.info(f"[TIMING] Request started: /api/gee_ndvi | params: {{index_type: {index_type}, coords: {coords_summary}, dates: {start} to {end}}}")
         
         # Validate inputs
         if not coords or not start or not end:
@@ -1654,33 +1663,52 @@ def generate_ndvi():
             return jsonify({"success": False, "error": "Invalid polygon: must have at least 3 points"}), 400
         
         # Check cache first
+        cache_start_time = time.perf_counter()
         cache_key = get_cache_key(coords, start, end, "ndvi_tiles", index_type)
         with cache_lock:
             if cache_key in cache:
-                logger.info(f"Cache hit for {index_type} tiles request")
+                cache_elapsed = time.perf_counter() - cache_start_time
+                total_elapsed = time.perf_counter() - request_start_time
+                logger.info(f"[TIMING] Cache hit for {index_type} tiles request")
+                logger.info(f"[TIMING] Cache lookup: {cache_elapsed:.3f}s")
+                logger.info(f"[TIMING] Total request time (cache hit): {total_elapsed:.3f}s")
                 return jsonify(cache[cache_key])
+        cache_elapsed = time.perf_counter() - cache_start_time
+        logger.info(f"[TIMING] Cache lookup (miss): {cache_elapsed:.3f}s")
         
         # Log incoming request
         logger.info(f"Processing {index_type} tiles request: start={start}, end={end}, coords length={len(coords)}")
         
-        # Create Earth Engine geometry
+        # [TIMING] Create Earth Engine geometry
+        geometry_start_time = time.perf_counter()
         polygon = ee.Geometry.Polygon(coords)
+        geometry_elapsed = time.perf_counter() - geometry_start_time
+        logger.info(f"[TIMING] Geometry creation: {geometry_elapsed:.3f}s")
 
-        # Get optimized collection with new cloud cover calculation
+        # [TIMING] Get optimized collection with new cloud cover calculation
+        collection_start_time = time.perf_counter()
         collection, collection_size, avg_cloud_cover = get_optimized_collection(polygon, start, end, limit_images=True)
+        collection_elapsed = time.perf_counter() - collection_start_time
+        logger.info(f"[TIMING] GEE collection filtered: {collection_elapsed:.3f}s")
         
         if collection is None or collection_size == 0:
+            total_elapsed = time.perf_counter() - request_start_time
+            logger.info(f"[TIMING] Total request time (no data): {total_elapsed:.3f}s")
             return jsonify({
                 "success": False, 
                 "error": "No Sentinel-2 imagery found for the specified date range and location",
                 "empty_collection": True
             }), 404
         
-        # Use mosaic instead of median for better performance
+        # [TIMING] Use mosaic instead of median for better performance
+        mosaic_start_time = time.perf_counter()
         image = collection.median().clip(polygon)
         first_image = collection.first()
+        mosaic_elapsed = time.perf_counter() - mosaic_start_time
+        logger.info(f"[TIMING] Image mosaic created: {mosaic_elapsed:.3f}s")
         
-        # Handle RGB vs Index calculation
+        # [TIMING] Handle RGB vs Index calculation
+        index_calc_start_time = time.perf_counter()
         if index_type == "RGB":
             # RGB visualization
             rgb = image.select(["B4", "B3", "B2"])
@@ -1706,7 +1734,8 @@ def generate_ndvi():
             # Apply performance optimization with reproject
             vis_image = index_image.visualize(**vis_params).reproject(crs='EPSG:4326', scale=10)
             
-            # Calculate statistics
+            # [TIMING] Calculate statistics
+            stats_start_time = time.perf_counter()
             stats = index_image.reduceRegion(
                 reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
                 geometry=polygon,
@@ -1714,17 +1743,28 @@ def generate_ndvi():
                 maxPixels=1e9
             )
             stats_dict = stats.getInfo()
+            stats_elapsed = time.perf_counter() - stats_start_time
+            logger.info(f"[TIMING] Statistics calculation: {stats_elapsed:.3f}s")
         
-        # Calculate scene-level cloud cover
+        index_calc_elapsed = time.perf_counter() - index_calc_start_time
+        logger.info(f"[TIMING] Index calculation completed: {index_calc_elapsed:.3f}s")
+        
+        # [TIMING] Calculate scene-level cloud cover
+        cloud_calc_start_time = time.perf_counter()
         scene_cloud_percentage = first_image.get("CLOUDY_PIXEL_PERCENTAGE")
         
         # Get image date
         image_date = first_image.date().format("YYYY-MM-dd").getInfo()
         scene_cloud_pct = scene_cloud_percentage.getInfo()
+        cloud_calc_elapsed = time.perf_counter() - cloud_calc_start_time
+        logger.info(f"[TIMING] Cloud cover calculated: {cloud_calc_elapsed:.3f}s")
         
-        # Get map ID for tile URL
+        # [TIMING] Get map ID for tile URL
+        map_id_start_time = time.perf_counter()
         try:
             map_id = ee.data.getMapId({"image": vis_image})
+            map_id_elapsed = time.perf_counter() - map_id_start_time
+            logger.info(f"[TIMING] Map ID generation: {map_id_elapsed:.3f}s")
             
             # Use the new collection-wide cloud cover if available
             display_cloud_percentage = avg_cloud_cover if avg_cloud_cover is not None else scene_cloud_pct
@@ -1752,15 +1792,22 @@ def generate_ndvi():
                 response["min"] = stats_dict.get(f"{stat_key}_min")
                 response["max"] = stats_dict.get(f"{stat_key}_max")
             
-            # Cache the response
+            # [TIMING] Cache the response
+            cache_store_start_time = time.perf_counter()
             with cache_lock:
                 cache[cache_key] = response
-                
-            logger.info(f"Successfully processed {index_type} tiles request with S2_CLOUD_PROBABILITY.")
+            cache_store_elapsed = time.perf_counter() - cache_store_start_time
+            logger.info(f"[TIMING] Response cached: {cache_store_elapsed:.3f}s")
+            
+            # [TIMING] Log total request time
+            total_elapsed = time.perf_counter() - request_start_time
+            logger.info(f"[TIMING] Successfully processed {index_type} tiles request with S2_CLOUD_PROBABILITY.")
+            logger.info(f"[TIMING] Total request time: {total_elapsed:.3f}s")
             return jsonify(response)
             
         except Exception as e:
-            logger.error(f"Error getting map IDs: {e}")
+            map_id_elapsed = time.perf_counter() - map_id_start_time
+            logger.error(f"[TIMING] Error getting map IDs: {map_id_elapsed:.3f}s - {e}")
             
             display_cloud_percentage = avg_cloud_cover if avg_cloud_cover is not None else scene_cloud_pct
             
@@ -1784,15 +1831,24 @@ def generate_ndvi():
                 response["min"] = stats_dict.get(f"{index_name}_min")
                 response["max"] = stats_dict.get(f"{index_name}_max")
             
+            # [TIMING] Cache the response
+            cache_store_start_time = time.perf_counter()
             with cache_lock:
                 cache[cache_key] = response
-                
+            cache_store_elapsed = time.perf_counter() - cache_store_start_time
+            logger.info(f"[TIMING] Response cached (with error): {cache_store_elapsed:.3f}s")
+            
+            # [TIMING] Log total request time
+            total_elapsed = time.perf_counter() - request_start_time
+            logger.info(f"[TIMING] Total request time (with visualization error): {total_elapsed:.3f}s")
             return jsonify(response)
 
     except Exception as e:
+        total_elapsed = time.perf_counter() - request_start_time
         error_message = str(e)
         stack_trace = traceback.format_exc()
-        logger.error(f"Error in GEE processing: {error_message}")
+        logger.error(f"[TIMING] Error in GEE processing: {error_message}")
+        logger.error(f"[TIMING] Total request time (error): {total_elapsed:.3f}s")
         logger.error(f"Stack trace: {stack_trace}")
         
         return jsonify({
@@ -1804,6 +1860,9 @@ def generate_ndvi():
 @app.route("/api/gee_ndvi_timeseries", methods=["POST"])
 @require_auth
 def generate_ndvi_timeseries():
+    # [TIMING] Start total request timer
+    request_start_time = time.perf_counter()
+    
     try:
         if not gee_initialized:
             return jsonify({
@@ -1820,6 +1879,10 @@ def generate_ndvi_timeseries():
         crop = data.get("crop", "")  # NEW: for wheat detection
         force_winter_detector = data.get("forceWinterDetector", False)  # NEW: override flag
         index_type = data.get("index_type", "NDVI") # NEW: Get index type
+        
+        # [TIMING] Log request parameters
+        coords_summary = f"[{len(coords[0]) if coords and len(coords) > 0 else 0} points]"
+        logger.info(f"[TIMING] Request started: /api/gee_ndvi_timeseries | params: {{index_type: {index_type}, coords: {coords_summary}, dates: {start} to {end}, crop: {crop}}}")
         
         # Validate inputs
         if not coords or not start or not end:
@@ -1841,11 +1904,14 @@ def generate_ndvi_timeseries():
         if len(coords[0]) < 3:
             return jsonify({"success": False, "error": "Invalid polygon: must have at least 3 points"}), 400
         
-        # Check cache first
+        # [TIMING] Check cache first
+        cache_start_time = time.perf_counter()
         cache_key = get_cache_key(coords, start, end, "ndvi_timeseries", index_type)
         with cache_lock:
             if cache_key in cache:
-                logger.info(f"Cache hit for {index_type} timeseries request")
+                cache_elapsed = time.perf_counter() - cache_start_time
+                logger.info(f"[TIMING] Cache hit for {index_type} timeseries request")
+                logger.info(f"[TIMING] Cache lookup: {cache_elapsed:.3f}s")
                 cached_response = cache[cache_key]
                 
                 # Add wheat emergence detection if needed (only for NDVI)
@@ -1862,32 +1928,48 @@ def generate_ndvi_timeseries():
                     except Exception as e:
                         logger.error(f"Error adding wheat detection: {e}")
                 
+                total_elapsed = time.perf_counter() - request_start_time
+                logger.info(f"[TIMING] Total request time (cache hit): {total_elapsed:.3f}s")
                 return jsonify(cached_response)
+        
+        cache_elapsed = time.perf_counter() - cache_start_time
+        logger.info(f"[TIMING] Cache lookup (miss): {cache_elapsed:.3f}s")
         
         # Log incoming request
         logger.info(f"Processing {index_type} time series: start={start}, end={end}, crop={crop}")
         
-        # Create Earth Engine geometry  
+        # [TIMING] Create Earth Engine geometry  
+        geometry_start_time = time.perf_counter()
         polygon = ee.Geometry.Polygon(coords)
+        geometry_elapsed = time.perf_counter() - geometry_start_time
+        logger.info(f"[TIMING] Geometry creation: {geometry_elapsed:.3f}s")
 
-        # Get optimized collection (don't limit for time series)
+        # [TIMING] Get optimized collection (don't limit for time series)
+        collection_start_time = time.perf_counter()
         collection, collection_size, avg_collection_cloud_cover = get_optimized_collection(polygon, start, end, limit_images=False)
+        collection_elapsed = time.perf_counter() - collection_start_time
+        logger.info(f"[TIMING] GEE collection filtered: {collection_elapsed:.3f}s")
         
         if collection is None or collection_size == 0:
+            total_elapsed = time.perf_counter() - request_start_time
+            logger.info(f"[TIMING] Total request time (no data): {total_elapsed:.3f}s")
             return jsonify({
                 "success": False, 
                 "error": "No Sentinel-2 imagery found for the specified date range and location",
                 "empty_collection": True
             }), 404
         
-        # Get cloud probability collection for joining
+        # [TIMING] Get cloud probability collection for joining
+        cloud_prob_start_time = time.perf_counter()
         cloud_prob_collection = (
             ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY')
             .filterBounds(polygon)
             .filterDate(start, end)
         )
+        cloud_prob_elapsed = time.perf_counter() - cloud_prob_start_time
+        logger.info(f"[TIMING] Cloud probability collection prepared: {cloud_prob_elapsed:.3f}s")
         
-        # OPTIMIZED: Add index and cloud statistics to image properties
+        # [TIMING] OPTIMIZED: Add index and cloud statistics to image properties
         def add_index_and_cloud_stats(image):
             """Add index statistics and cloud cover to image properties using S2_CLOUD_PROBABILITY"""
             clipped = image.clip(polygon)
@@ -1973,10 +2055,14 @@ def generate_ndvi_timeseries():
                 'cloud_method': ee.Algorithms.If(cloud_prob_exists, 's2_cloud_probability', 'qa60_fallback')
             })
         
-        # Map the function over the collection
+        # [TIMING] Map the function over the collection
+        stats_mapping_start_time = time.perf_counter()
         collection_with_stats = collection.map(add_index_and_cloud_stats)
+        stats_mapping_elapsed = time.perf_counter() - stats_mapping_start_time
+        logger.info(f"[TIMING] Statistics mapping prepared: {stats_mapping_elapsed:.3f}s")
         
-        # Get all data in batch
+        # [TIMING] Get all data in batch
+        batch_start_time = time.perf_counter()
         dates_array = collection_with_stats.aggregate_array('date_formatted')
         index_array = collection_with_stats.aggregate_array(f'{index_type.lower()}_mean')
         scene_cloud_array = collection_with_stats.aggregate_array('scene_cloud_percentage')
@@ -1991,7 +2077,11 @@ def generate_ndvi_timeseries():
             'field_cloud_percentages': field_cloud_array,
             'cloud_methods': cloud_method_array
         }).getInfo()
+        batch_elapsed = time.perf_counter() - batch_start_time
+        logger.info(f"[TIMING] Time series data extracted: {batch_elapsed:.3f}s")
         
+        # [TIMING] Process batch data
+        processing_start_time = time.perf_counter()
         dates = batch_data['dates']
         index_values = batch_data['index_values']
         scene_cloud_percentages = batch_data['scene_cloud_percentages']
@@ -2025,8 +2115,13 @@ def generate_ndvi_timeseries():
                 
                 index_time_series.append(data_point)
         
+        processing_elapsed = time.perf_counter() - processing_start_time
+        logger.info(f"[TIMING] Data processing completed: {processing_elapsed:.3f}s")
+        
         # Verify we have sufficient data points
         if len(index_time_series) == 0:
+            total_elapsed = time.perf_counter() - request_start_time
+            logger.info(f"[TIMING] Total request time (no valid readings): {total_elapsed:.3f}s")
             return jsonify({
                 "success": False, 
                 "error": f"No valid {index_type} readings could be calculated for this field",
@@ -2054,8 +2149,9 @@ def generate_ndvi_timeseries():
             "cloud_calculation_method": "s2_cloud_probability_timeseries"
         }
         
-        # NEW: Add wheat emergence detection if this is a wheat field AND using NDVI
+        # [TIMING] NEW: Add wheat emergence detection if this is a wheat field AND using NDVI
         if index_type == "NDVI" and crop.lower() == 'wheat':
+            wheat_detection_start_time = time.perf_counter()
             logger.info("Running wheat emergence detection on time series...")
             try:
                 wheat_emergence, wheat_confidence, wheat_metadata = detect_wheat_winter_emergence(
@@ -2084,18 +2180,29 @@ def generate_ndvi_timeseries():
             except Exception as e:
                 logger.error(f"Error in wheat emergence detection: {e}")
                 response["wheat_detection_error"] = str(e)
+            
+            wheat_detection_elapsed = time.perf_counter() - wheat_detection_start_time
+            logger.info(f"[TIMING] Wheat emergence detection: {wheat_detection_elapsed:.3f}s")
         
-        # Cache the response
+        # [TIMING] Cache the response
+        cache_store_start_time = time.perf_counter()
         with cache_lock:
             cache[cache_key] = response
+        cache_store_elapsed = time.perf_counter() - cache_store_start_time
+        logger.info(f"[TIMING] Response cached: {cache_store_elapsed:.3f}s")
         
+        # [TIMING] Log total time and return
+        total_elapsed = time.perf_counter() - request_start_time
         logger.info(f"Successfully processed {index_type} time series with S2_CLOUD_PROBABILITY. {len(index_time_series)} data points returned.")
+        logger.info(f"[TIMING] Total request time: {total_elapsed:.3f}s")
         return jsonify(response)
 
     except Exception as e:
+        total_elapsed = time.perf_counter() - request_start_time
         error_message = str(e)
         stack_trace = traceback.format_exc()
-        logger.error(f"Error in GEE time series processing: {error_message}")
+        logger.error(f"[TIMING] Error in GEE time series processing: {error_message}")
+        logger.error(f"[TIMING] Total request time (error): {total_elapsed:.3f}s")
         logger.error(f"Stack trace: {stack_trace}")
         
         return jsonify({
@@ -2117,6 +2224,7 @@ def startup_initialization():
         logger.info(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
         logger.info(f"✓ S2_CLOUD_PROBABILITY Method: ENABLED")
         logger.info(f"✓ Authentication Middleware: LOADED")
+        logger.info(f"✓ Performance Timing Logs: ENABLED")
     else:
         logger.error(f"✗ GEE Preload Failed: {message}")
         logger.error("✗ Application may not function properly")
