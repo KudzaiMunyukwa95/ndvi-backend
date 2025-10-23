@@ -39,7 +39,24 @@ sys.stdout.reconfigure(line_buffering=True)
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": [
+            "http://localhost:3000",
+            "https://yieldera.co.zw",
+            "https://www.yieldera.co.zw",
+            "https://dashboard.yieldera.co.zw",
+            "https://api.yieldera.co.zw",
+            "https://staging.yieldera.co.zw",
+            "https://ndvi.staging.yieldera.co.zw"
+        ],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True,
+        "expose_headers": ["Content-Type", "Authorization"],
+        "max_age": 3600
+    }
+})
 
 # Enable GZIP compression
 Compress(app)
@@ -1577,6 +1594,26 @@ Keep it simple and actionable for farmers."""
             "error": error_message,
             "stack_trace": stack_trace
         }), 500
+
+@app.route('/api/gee_ndvi', methods=['OPTIONS'])
+def gee_ndvi_options():
+    response = jsonify({'status': 'ok'})
+    origin = request.headers.get('Origin')
+    allowed_origins = [
+        'http://localhost:3000',
+        'https://yieldera.co.zw',
+        'https://www.yieldera.co.zw',
+        'https://dashboard.yieldera.co.zw',
+        'https://api.yieldera.co.zw',
+        'https://staging.yieldera.co.zw',
+        'https://ndvi.staging.yieldera.co.zw'
+    ]
+    if origin in allowed_origins:
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response, 200
 
 @app.route("/api/gee_ndvi", methods=["POST"])
 @require_auth
