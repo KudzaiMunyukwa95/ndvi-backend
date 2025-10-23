@@ -1676,18 +1676,17 @@ def generate_ndvi():
                 "empty_collection": True
             }), 404
         
-        # OPTIMIZED: Use mosaic instead of median - 5-10x faster!
-        # Mosaic takes the first valid pixel, median computes across all images (very slow)
+        # Use mosaic instead of median for better performance
+        image = collection.median().clip(polygon)
         first_image = collection.first()
-        image = collection.mosaic().clip(polygon)
-
+        
         # Handle RGB vs Index calculation
         if index_type == "RGB":
             # RGB visualization
             rgb = image.select(["B4", "B3", "B2"])
-            # OPTIMIZED: Remove reproject - let GEE handle it automatically
-            vis_image = rgb.visualize(min=0, max=3000)
-
+            # Apply performance optimization with reproject
+            vis_image = rgb.visualize(min=0, max=3000).reproject(crs='EPSG:4326', scale=30)
+            
             # No stats for RGB
             stats_dict = {}
             index_name = "RGB"
@@ -1695,7 +1694,7 @@ def generate_ndvi():
             # Calculate the selected index
             index_image = get_index(image, index_type)
             index_name = index_type
-
+            
             # Get visualization parameters from updated INDEX_CONFIGS
             config = INDEX_CONFIGS[index_type]
             vis_params = {
@@ -1703,35 +1702,25 @@ def generate_ndvi():
                 "max": config["range"][1],
                 "palette": config["palette"]
             }
-
-            # OPTIMIZED: Remove reproject - let GEE handle it automatically
-            vis_image = index_image.visualize(**vis_params)
-
-            # OPTIMIZED: Calculate statistics with coarser scale (20m instead of 10m = 4x fewer pixels)
+            
+            # Apply performance optimization with reproject
+            vis_image = index_image.visualize(**vis_params).reproject(crs='EPSG:4326', scale=10)
+            
+            # Calculate statistics
             stats = index_image.reduceRegion(
                 reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
                 geometry=polygon,
-                scale=20,
-                maxPixels=1e9,
-                bestEffort=True  # Allow coarser scale if needed
+                scale=10,
+                maxPixels=1e9
             )
-            stats_dict = stats
-
-        # OPTIMIZED: Batch all getInfo() calls into one to reduce API round trips
-        # Get scene-level cloud cover
+            stats_dict = stats.getInfo()
+        
+        # Calculate scene-level cloud cover
         scene_cloud_percentage = first_image.get("CLOUDY_PIXEL_PERCENTAGE")
-        image_date = first_image.date().format("YYYY-MM-dd")
-
-        # Batch getInfo call for metadata
-        metadata = ee.Dictionary({
-            'image_date': image_date,
-            'scene_cloud_pct': scene_cloud_percentage,
-            'stats': stats_dict if index_type != "RGB" else ee.Dictionary({})
-        }).getInfo()
-
-        image_date = metadata['image_date']
-        scene_cloud_pct = metadata['scene_cloud_pct']
-        stats_dict = metadata['stats'] if index_type != "RGB" else {}
+        
+        # Get image date
+        image_date = first_image.date().format("YYYY-MM-dd").getInfo()
+        scene_cloud_pct = scene_cloud_percentage.getInfo()
         
         # Get map ID for tile URL
         try:
