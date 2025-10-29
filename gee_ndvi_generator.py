@@ -21,7 +21,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZIPMiddleware
+from starlette.middleware.gzip import GZIPMiddleware
 from pydantic import BaseModel, Field
 from openai import OpenAI
 from dotenv import load_dotenv
