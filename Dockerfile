@@ -12,7 +12,6 @@ COPY . .
 # Expose port (CapRover will map this)
 EXPOSE 5000
 
-# Run with Uvicorn (FastAPI's recommended server)
-# Using 4 workers for parallel processing, timeout of 180s
-# FIXED: Changed from "gee_ndvi_generator_fastapi:app" to "gee_ndvi_generator:app"
-CMD ["uvicorn", "gee_ndvi_generator:app", "--host", "0.0.0.0", "--port", "5000", "--workers", "4", "--timeout-keep-alive", "180"]
+# Use Gunicorn with Uvicorn workers for better process management
+# Preload ensures GEE initializes once before forking workers
+CMD ["gunicorn", "gee_ndvi_generator:app", "--bind", "0.0.0.0:5000", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--timeout", "180", "--preload"]
