@@ -1,10 +1,9 @@
 """
-Complete FastAPI version with real-time logging configuration for Gunicorn multi-worker deployment.
-All print() statements replaced with logger.info() for immediate console visibility.
+Updated with real-time logging configuration for Gunicorn multi-worker deployment.
+All print() statements replaced with logger.info() for immediate DigitalOcean console visibility.
 Cloud cover calculation updated to use Google Earth Engine's standard S2_CLOUD_PROBABILITY method.
 Authentication middleware integrated for API security.
 Performance timing logs added for deployment speed measurement.
-Includes ALL endpoints and helper functions from Flask version.
 """
 
 import os
@@ -18,12 +17,9 @@ import logging
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any, Union
-from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.gzip import GZipMiddleware
-from pydantic import BaseModel, Field
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from flask_compress import Compress
 from openai import OpenAI
 from dotenv import load_dotenv
 from cachetools import TTLCache
@@ -44,29 +40,28 @@ sys.stdout.reconfigure(line_buffering=True)
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title="GEE NDVI Generator API", version="2.0")
-
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://yieldera.co.zw",
-        "https://www.yieldera.co.zw",
-        "https://dashboard.yieldera.co.zw",
-        "https://api.yieldera.co.zw",
-        "https://staging.yieldera.co.zw",
-        "https://ndvi.staging.yieldera.co.zw"
-    ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-    expose_headers=["Content-Type", "Authorization"],
-    max_age=3600
-)
+app = Flask(__name__)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": [
+            "http://localhost:3000",
+            "https://yieldera.co.zw",
+            "https://www.yieldera.co.zw",
+            "https://dashboard.yieldera.co.zw",
+            "https://api.yieldera.co.zw",
+            "https://staging.yieldera.co.zw",
+            "https://ndvi.staging.yieldera.co.zw"
+        ],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True,
+        "expose_headers": ["Content-Type", "Authorization"],
+        "max_age": 3600
+    }
+})
 
 # Enable GZIP compression
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+Compress(app)
 
 # Log authentication status
 log_authentication_status()
@@ -152,64 +147,6 @@ gee_initialized = False
 gee_initialization_error = None
 gee_initializing = False
 
-# ============================================================================
-# PYDANTIC MODELS
-# ============================================================================
-
-class MapGenerationRequest(BaseModel):
-    coordinates: List[List[float]]
-    startDate: str
-    endDate: str
-    index_type: str = "NDVI"
-
-class TimeSeriesRequest(BaseModel):
-    coordinates: List[List[float]]
-    startDate: str
-    endDate: str
-    index_type: str = "NDVI"
-    crop: Optional[str] = None
-    forceWinterDetector: Optional[bool] = False
-
-class AgronomicInsightRequest(BaseModel):
-    field_name: str = "Unknown field"
-    crop: str = "Unknown crop"
-    variety: Optional[str] = "Unknown variety"
-    irrigated: bool = False
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    date_range: str = "Unknown period"
-    ndvi_data: List[Dict[str, Any]] = []
-    rainfall_data: Optional[List[Dict[str, Any]]] = []
-    temperature_data: Optional[List[Dict[str, Any]]] = []
-    gdd_data: Optional[List[Dict[str, Any]]] = []
-    gdd_stats: Optional[Dict[str, Any]] = {}
-    temperature_summary: Optional[Dict[str, Any]] = {}
-    base_temperature: float = 10
-    coordinates: Optional[List[List[float]]] = None
-    forceWinterDetector: bool = False
-
-class WarmupRequest(BaseModel):
-    force: Optional[bool] = False
-
-# Legacy models for backward compatibility
-class LegacyNDVIRequest(BaseModel):
-    coordinates: List[List[float]]
-    startDate: str
-    endDate: str
-    index_type: str = "NDVI"
-
-class LegacyTimeSeriesRequest(BaseModel):
-    coordinates: List[List[float]]
-    startDate: str
-    endDate: str
-    index_type: str = "NDVI"
-    crop: Optional[str] = None
-    forceWinterDetector: Optional[bool] = False
-
-# ============================================================================
-# GEE INITIALIZATION
-# ============================================================================
-
 def initialize_gee_at_startup():
     """Initialize Google Earth Engine once at server startup"""
     global gee_initialization_time, gee_initialized, gee_initialization_error, gee_initializing
@@ -257,23 +194,6 @@ def initialize_gee_at_startup():
         gee_initialized = False
         gee_initializing = False
         return False, f"GEE initialization failed: {error_msg}"
-
-def check_gee_initialized():
-    """Dependency to check if GEE is initialized"""
-    if not gee_initialized:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "success": False,
-                "error": "Google Earth Engine not initialized",
-                "initialization_error": gee_initialization_error
-            }
-        )
-    return True
-
-# ============================================================================
-# HELPER FUNCTIONS (From Flask app)
-# ============================================================================
 
 def get_cache_key(coords, start_date, end_date, endpoint_type, index_type="NDVI"):
     """Generate a cache key for the given parameters"""
@@ -326,6 +246,50 @@ def get_index(image, index_type):
         # Default fallback: NDVI with clamping
         ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
         return ndvi.where(ndvi.lt(0), 0)
+
+# NEW: Calculate dynamic visualization range
+def calculate_dynamic_range(index_image, polygon, index_type):
+    """
+    Calculate dynamic min/max values for visualization using reduceRegion
+    """
+    try:
+        # Get actual min/max from the image
+        stats = index_image.reduceRegion(
+            reducer=ee.Reducer.minMax(),
+            geometry=polygon,
+            scale=20,
+            maxPixels=1e9
+        )
+        
+        stats_dict = stats.getInfo()
+        stat_key = index_type
+        
+        actual_min = stats_dict.get(f"{stat_key}_min")
+        actual_max = stats_dict.get(f"{stat_key}_max")
+        
+        # Get default range from config
+        config = INDEX_CONFIGS.get(index_type, {"range": [-1, 1]})
+        default_min, default_max = config["range"]
+        
+        # Use actual values if available, otherwise use defaults
+        vis_min = actual_min if actual_min is not None else default_min
+        vis_max = actual_max if actual_max is not None else default_max
+        
+        # Ensure reasonable range (avoid extremely narrow ranges)
+        if abs(vis_max - vis_min) < 0.01:
+            vis_min = default_min
+            vis_max = default_max
+        
+        logger.info(f"Dynamic range for {index_type}: actual({actual_min:.3f}, {actual_max:.3f}) -> vis({vis_min:.3f}, {vis_max:.3f})")
+        
+        return vis_min, vis_max, actual_min, actual_max
+        
+    except Exception as e:
+        logger.error(f"Error calculating dynamic range for {index_type}: {e}")
+        # Fall back to default range
+        config = INDEX_CONFIGS.get(index_type, {"range": [-1, 1]})
+        default_min, default_max = config["range"]
+        return default_min, default_max, None, None
 
 def smooth_ndvi_series(ndvi_data, window=SMOOTH_WINDOW):
     """Apply 3-point median smoothing to NDVI series"""
@@ -862,22 +826,128 @@ def get_optimized_collection(polygon, start_date, end_date, limit_images=True):
     
     return collection, collection_size, avg_cloud_cover
 
-def calculate_std_dev(values):
-    """Calculate standard deviation of values"""
-    if not values:
-        return 0
-    mean = sum(values) / len(values)
-    variance = sum((x - mean) ** 2 for x in values) / len(values)
-    return variance ** 0.5
+@app.route("/")
+def index():
+    return "NDVI & RGB backend with Multi-Index Support (NDVI, EVI, SAVI, NDMI, NDWI, RGB) is live!"
 
-def format_date_for_display(date_str):
-    """Format date for display (Month Day format)"""
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Health check endpoint that responds quickly during initialization"""
     try:
-        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-        return date_obj.strftime('%B %d')
-    except Exception:
-        return date_str
+        # Return fast response even during initialization
+        if gee_initializing:
+            return jsonify({
+                "success": True, 
+                "message": "Backend is starting up, GEE initialization in progress",
+                "timestamp": datetime.now().isoformat(),
+                "gee_initialized": False,
+                "gee_initializing": True,
+                "cache_size": len(cache),
+                "spatial_cache_size": len(spatial_cache),
+                "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+            }), 200
+        
+        if not gee_initialized:
+            return jsonify({
+                "success": False, 
+                "message": f"GEE not initialized: {gee_initialization_error}",
+                "timestamp": datetime.now().isoformat(),
+                "gee_initialized": False,
+                "gee_initializing": False
+            }), 500
+        
+        return jsonify({
+            "success": True, 
+            "message": f"Backend is healthy. GEE initialized at startup. Multi-Index Support enabled (NDVI, EVI, SAVI, NDMI, NDWI, RGB).",
+            "timestamp": datetime.now().isoformat(),
+            "gee_initialized": True,
+            "gee_initializing": False,
+            "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None,
+            "cache_size": len(cache),
+            "spatial_cache_size": len(spatial_cache),
+            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False, 
+            "message": f"Health check failed: {str(e)}",
+            "timestamp": datetime.now().isoformat(),
+            "gee_initialized": gee_initialized,
+            "gee_initializing": gee_initializing
+        }), 500
 
+@app.route("/api/ping", methods=["GET"])
+def ping():
+    """Simple ping endpoint for basic connectivity"""
+    return jsonify({
+        "success": True,
+        "message": "Pong",
+        "timestamp": datetime.now().isoformat(),
+        "cache_size": len(cache),
+        "spatial_cache_size": len(spatial_cache)
+    })
+
+@app.route("/api/warmup", methods=["POST"])
+@require_auth
+def warmup():
+    """Dedicated warmup endpoint"""
+    try:
+        # Quick response during initialization
+        if gee_initializing:
+            return jsonify({
+                "success": True,
+                "message": "GEE initialization in progress",
+                "timestamp": datetime.now().isoformat(),
+                "gee_initializing": True
+            }), 200
+        
+        if not gee_initialized:
+            # Try to initialize if not already done
+            success, message = initialize_gee_at_startup()
+            if not success:
+                return jsonify({
+                    "success": False,
+                    "message": f"GEE initialization failed: {message}",
+                    "timestamp": datetime.now().isoformat()
+                }), 500
+        
+        # Test a simple Sentinel-2 operation to warm up
+        logger.info("Warming up with test Sentinel-2 query...")
+        start_time = datetime.now()
+        
+        # Simple test query
+        test_collection = (
+            ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+            .filterDate("2023-01-01", "2023-01-02")
+            .first()
+        )
+        
+        # Force execution to warm up the pipeline
+        test_info = test_collection.getInfo()
+        
+        warmup_duration = (datetime.now() - start_time).total_seconds()
+        logger.info(f"Warmup completed in {warmup_duration:.2f} seconds")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Backend warmed up successfully.",
+            "warmup_duration_seconds": warmup_duration,
+            "timestamp": datetime.now().isoformat(),
+            "gee_initialized": True,
+            "cache_size": len(cache),
+            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+        })
+        
+    except Exception as e:
+        logger.error(f"Warmup error: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": f"Warmup failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+# MODIFIED: Enhanced primary emergence detection with wheat winter path
 def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainfall_data=None, coordinates=None, force_winter_detector=False):
     """
     Detects the FIRST emergence event and estimates the primary planting window.
@@ -1103,6 +1173,7 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
         "detection_method": "standard"
     }
 
+# SECONDARY FUNCTION: Detect tillage/replanting events (unchanged)
 def detect_tillage_replanting_events(ndvi_data, primary_emergence_date=None):
     """
     Detects tillage or replanting events AFTER the primary emergence.
@@ -1166,6 +1237,7 @@ def detect_tillage_replanting_events(ndvi_data, primary_emergence_date=None):
     
     return {"tillage_detected": False, "message": ""}
 
+# FUNCTION: Detect rainfall without emergence (unchanged)
 def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_threshold=10, ndvi_threshold=0.2, response_window_days=14):
     """
     Detect significant rainfall events that aren't followed by crop emergence.
@@ -1242,197 +1314,51 @@ def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_thr
     
     return None
 
-def startup_initialization():
-    """Called during app startup when using --preload"""
-    logger.info("=== STARTUP INITIALIZATION (PRELOAD MODE) ===")
-    success, message = initialize_gee_at_startup()
-    if success:
-        logger.info(f"✓ GEE Preload Success: {message}")
-        logger.info(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, NDWI, RGB)")
-        logger.info(f"✓ Wheat Winter Detection: ENABLED")
-        logger.info(f"✓ Spatial Adaptation Cache: READY")
-        logger.info(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
-        logger.info(f"✓ S2_CLOUD_PROBABILITY Method: ENABLED")
-        logger.info(f"✓ Authentication Middleware: LOADED")
-        logger.info(f"✓ Performance Timing Logs: ENABLED")
-    else:
-        logger.error(f"✗ GEE Preload Failed: {message}")
-        logger.error("✗ Application may not function properly")
-
-# ============================================================================
-# FASTAPI ENDPOINTS
-# ============================================================================
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "NDVI & RGB backend with Multi-Index Support (NDVI, EVI, SAVI, NDMI, NDWI, RGB) is live!",
-        "version": "2.0",
-        "status": "operational" if gee_initialized else "initializing",
-        "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
-    }
-
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint that responds quickly during initialization"""
+# Format date for display (Month Day format)
+def format_date_for_display(date_str):
     try:
-        # Return fast response even during initialization
-        if gee_initializing:
-            return {
-                "success": True, 
-                "message": "Backend is starting up, GEE initialization in progress",
-                "timestamp": datetime.now().isoformat(),
-                "gee_initialized": False,
-                "gee_initializing": True,
-                "cache_size": len(cache),
-                "spatial_cache_size": len(spatial_cache),
-                "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
-            }
-        
-        if not gee_initialized:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False, 
-                    "message": f"GEE not initialized: {gee_initialization_error}",
-                    "timestamp": datetime.now().isoformat(),
-                    "gee_initialized": False,
-                    "gee_initializing": False
-                }
-            )
-        
-        return {
-            "success": True, 
-            "message": f"Backend is healthy. GEE initialized at startup. Multi-Index Support enabled (NDVI, EVI, SAVI, NDMI, NDWI, RGB).",
-            "timestamp": datetime.now().isoformat(),
-            "gee_initialized": True,
-            "gee_initializing": False,
-            "gee_init_time": gee_initialization_time.isoformat() if gee_initialization_time else None,
-            "cache_size": len(cache),
-            "spatial_cache_size": len(spatial_cache),
-            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
-        }
-        
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False, 
-                "message": f"Health check failed: {str(e)}",
-                "timestamp": datetime.now().isoformat(),
-                "gee_initialized": gee_initialized,
-                "gee_initializing": gee_initializing
-            }
-        )
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        return date_obj.strftime('%B %d')
+    except Exception:
+        return date_str
 
-@app.get("/api/ping")
-async def ping():
-    """Simple ping endpoint for basic connectivity"""
-    return {
-        "success": True,
-        "message": "Pong",
-        "timestamp": datetime.now().isoformat(),
-        "cache_size": len(cache),
-        "spatial_cache_size": len(spatial_cache)
-    }
+def calculate_std_dev(values):
+    if not values:
+        return 0
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    return variance ** 0.5
 
-@app.post("/api/warmup")
+@app.route("/api/agronomic_insight", methods=["POST"])
 @require_auth
-async def warmup(request: Optional[WarmupRequest] = None):
-    """Dedicated warmup endpoint"""
+def generate_agronomic_report():
     try:
-        # Quick response during initialization
-        if gee_initializing:
-            return {
-                "success": True,
-                "message": "GEE initialization in progress",
-                "timestamp": datetime.now().isoformat(),
-                "gee_initializing": True
-            }
-        
         if not gee_initialized:
-            # Try to initialize if not already done
-            success, message = initialize_gee_at_startup()
-            if not success:
-                raise HTTPException(
-                    status_code=500,
-                    detail={
-                        "success": False,
-                        "message": f"GEE initialization failed: {message}",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                )
-        
-        # Test a simple Sentinel-2 operation to warm up
-        logger.info("Warming up with test Sentinel-2 query...")
-        start_time = datetime.now()
-        
-        # Simple test query
-        test_collection = (
-            ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
-            .filterDate("2023-01-01", "2023-01-02")
-            .first()
-        )
-        
-        # Force execution to warm up the pipeline
-        test_info = test_collection.getInfo()
-        
-        warmup_duration = (datetime.now() - start_time).total_seconds()
-        logger.info(f"Warmup completed in {warmup_duration:.2f} seconds")
-        
-        return {
-            "success": True,
-            "message": f"Backend warmed up successfully.",
-            "warmup_duration_seconds": warmup_duration,
-            "timestamp": datetime.now().isoformat(),
-            "gee_initialized": True,
-            "cache_size": len(cache),
-            "supported_indices": ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Warmup error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail={
+            return jsonify({
                 "success": False,
-                "message": f"Warmup failed: {str(e)}",
-                "timestamp": datetime.now().isoformat()
-            }
-        )
-
-@app.post("/api/agronomic_insight")
-@require_auth
-async def generate_agronomic_report(request: AgronomicInsightRequest):
-    """Generate agronomic insights using OpenAI"""
-    try:
-        if not gee_initialized:
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "success": False,
-                    "error": "GEE not initialized"
-                }
-            )
+                "error": "GEE not initialized"
+            }), 500
+        
+        # Parse request data
+        data = request.get_json()
         
         # Extract required fields
-        field_name = request.field_name
-        crop = request.crop
-        variety = request.variety
-        irrigated = "Yes" if request.irrigated else "No"
-        latitude = request.latitude
-        longitude = request.longitude
-        date_range = request.date_range
-        ndvi_data = request.ndvi_data
-        rainfall_data = request.rainfall_data
-        temperature_data = request.temperature_data
-        gdd_data = request.gdd_data
-        gdd_stats = request.gdd_stats
-        temperature_summary = request.temperature_summary
-        base_temperature = request.base_temperature
-        coordinates = request.coordinates
-        force_winter_detector = request.forceWinterDetector
+        field_name = data.get("field_name", "Unknown field")
+        crop = data.get("crop", "Unknown crop")
+        variety = data.get("variety", "Unknown variety")
+        irrigated = "Yes" if data.get("irrigated", False) else "No"
+        latitude = data.get("latitude", "Unknown")
+        longitude = data.get("longitude", "Unknown")
+        date_range = data.get("date_range", "Unknown period")
+        ndvi_data = data.get("ndvi_data", [])
+        rainfall_data = data.get("rainfall_data", [])
+        temperature_data = data.get("temperature_data", [])
+        gdd_data = data.get("gdd_data", [])
+        gdd_stats = data.get("gdd_stats", {})
+        temperature_summary = data.get("temperature_summary", {})
+        base_temperature = data.get("base_temperature", 10)
+        coordinates = data.get("coordinates")  # NEW: for wheat winter detection
+        force_winter_detector = data.get("forceWinterDetector", False)  # NEW: override flag
         
         # Calculate average cloud cover if available
         avg_cloud_cover = None
@@ -1649,76 +1575,92 @@ Keep it simple and actionable for farmers."""
                         "message": tillage_results["message"]
                     }
             
-            return response_data
+            return jsonify(response_data)
             
         except Exception as e:
             logger.error(f"Insight generation error: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "success": False,
-                    "error": f"Insight generation error: {str(e)}",
-                    "fallback_insight": "Unable to generate agronomic insight due to service error. Please try again later."
-                }
-            )
+            return jsonify({
+                "success": False,
+                "error": f"Insight generation error: {str(e)}",
+                "fallback_insight": "Unable to generate agronomic insight due to service error. Please try again later."
+            }), 500
             
-    except HTTPException:
-        raise
     except Exception as e:
         error_message = str(e)
         stack_trace = traceback.format_exc()
         logger.error(f"Error generating agronomic report: {error_message}")
         logger.error(f"Stack trace: {stack_trace}")
         
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "success": False,
-                "error": error_message,
-                "stack_trace": stack_trace
-            }
-        )
+        return jsonify({
+            "success": False,
+            "error": error_message,
+            "stack_trace": stack_trace
+        }), 500
 
-@app.post("/api/map")
+@app.route('/api/gee_ndvi', methods=['OPTIONS'])
+def gee_ndvi_options():
+    response = jsonify({'status': 'ok'})
+    origin = request.headers.get('Origin')
+    allowed_origins = [
+        'http://localhost:3000',
+        'https://yieldera.co.zw',
+        'https://www.yieldera.co.zw',
+        'https://dashboard.yieldera.co.zw',
+        'https://api.yieldera.co.zw',
+        'https://staging.yieldera.co.zw',
+        'https://ndvi.staging.yieldera.co.zw'
+    ]
+    if origin in allowed_origins:
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response, 200
+
+@app.route("/api/gee_ndvi", methods=["POST"])
 @require_auth
-async def generate_ndvi(
-    request: MapGenerationRequest,
-    gee_check: bool = Depends(check_gee_initialized)
-):
-    """Generate map tiles for visualization"""
+def generate_ndvi():
     # [TIMING] Start total request timer
     request_start_time = time.perf_counter()
     
     try:
+        if not gee_initialized:
+            return jsonify({
+                "success": False, 
+                "error": "GEE not initialized",
+                "details": "Please restart the server or contact support."
+            }), 500
+        
         # Parse request data
-        coords = request.coordinates
-        start = request.startDate
-        end = request.endDate
-        index_type = request.index_type
+        data = request.get_json()
+        coords = data.get("coordinates")
+        start = data.get("startDate")
+        end = data.get("endDate")
+        index_type = data.get("index_type", "NDVI") # NEW: Get index type, default to NDVI
         
         # [TIMING] Log request parameters
         coords_summary = f"[{len(coords[0]) if coords and len(coords) > 0 else 0} points]"
-        logger.info(f"[TIMING] Request started: /api/map | params: {{index_type: {index_type}, coords: {coords_summary}, dates: {start} to {end}}}")
+        logger.info(f"[TIMING] Request started: /api/gee_ndvi | params: {{index_type: {index_type}, coords: {coords_summary}, dates: {start} to {end}}}")
         
         # Validate inputs
         if not coords or not start or not end:
-            raise HTTPException(status_code=400, detail="Missing input fields")
+            return jsonify({"success": False, "error": "Missing input fields"}), 400
         
         # Validate index type
         valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
         if index_type not in valid_indices:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid index_type. Must be one of: {', '.join(valid_indices)}"
-            )
+            return jsonify({
+                "success": False,
+                "error": f"Invalid index_type. Must be one of: {', '.join(valid_indices)}"
+            }), 400
         
         # Validate polygon geometry
         if not isinstance(coords, list) or len(coords) == 0:
-            raise HTTPException(status_code=400, detail="Invalid coordinates format")
+            return jsonify({"success": False, "error": "Invalid coordinates format"}), 400
             
         # Ensure we have a valid polygon (at least 3 points)
         if len(coords[0]) < 3:
-            raise HTTPException(status_code=400, detail="Invalid polygon: must have at least 3 points")
+            return jsonify({"success": False, "error": "Invalid polygon: must have at least 3 points"}), 400
         
         # Check cache first
         cache_start_time = time.perf_counter()
@@ -1730,7 +1672,7 @@ async def generate_ndvi(
                 logger.info(f"[TIMING] Cache hit for {index_type} tiles request")
                 logger.info(f"[TIMING] Cache lookup: {cache_elapsed:.3f}s")
                 logger.info(f"[TIMING] Total request time (cache hit): {total_elapsed:.3f}s")
-                return cache[cache_key]
+                return jsonify(cache[cache_key])
         cache_elapsed = time.perf_counter() - cache_start_time
         logger.info(f"[TIMING] Cache lookup (miss): {cache_elapsed:.3f}s")
         
@@ -1752,14 +1694,11 @@ async def generate_ndvi(
         if collection is None or collection_size == 0:
             total_elapsed = time.perf_counter() - request_start_time
             logger.info(f"[TIMING] Total request time (no data): {total_elapsed:.3f}s")
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "success": False, 
-                    "error": "No Sentinel-2 imagery found for the specified date range and location",
-                    "empty_collection": True
-                }
-            )
+            return jsonify({
+                "success": False, 
+                "error": "No Sentinel-2 imagery found for the specified date range and location",
+                "empty_collection": True
+            }), 404
         
         # [TIMING] Use mosaic instead of median for better performance
         mosaic_start_time = time.perf_counter()
@@ -1864,7 +1803,7 @@ async def generate_ndvi(
             total_elapsed = time.perf_counter() - request_start_time
             logger.info(f"[TIMING] Successfully processed {index_type} tiles request with S2_CLOUD_PROBABILITY.")
             logger.info(f"[TIMING] Total request time: {total_elapsed:.3f}s")
-            return response
+            return jsonify(response)
             
         except Exception as e:
             map_id_elapsed = time.perf_counter() - map_id_start_time
@@ -1902,10 +1841,8 @@ async def generate_ndvi(
             # [TIMING] Log total request time
             total_elapsed = time.perf_counter() - request_start_time
             logger.info(f"[TIMING] Total request time (with visualization error): {total_elapsed:.3f}s")
-            return response
+            return jsonify(response)
 
-    except HTTPException:
-        raise
     except Exception as e:
         total_elapsed = time.perf_counter() - request_start_time
         error_message = str(e)
@@ -1914,57 +1851,58 @@ async def generate_ndvi(
         logger.error(f"[TIMING] Total request time (error): {total_elapsed:.3f}s")
         logger.error(f"Stack trace: {stack_trace}")
         
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "success": False, 
-                "error": error_message,
-                "stack_trace": stack_trace
-            }
-        )
+        return jsonify({
+            "success": False, 
+            "error": error_message,
+            "stack_trace": stack_trace
+        }), 500
 
-@app.post("/api/time-series")
+@app.route("/api/gee_ndvi_timeseries", methods=["POST"])
 @require_auth
-async def generate_ndvi_timeseries(
-    request: TimeSeriesRequest,
-    gee_check: bool = Depends(check_gee_initialized)
-):
-    """Generate time series data"""
+def generate_ndvi_timeseries():
     # [TIMING] Start total request timer
     request_start_time = time.perf_counter()
     
     try:
+        if not gee_initialized:
+            return jsonify({
+                "success": False, 
+                "error": "GEE not initialized",
+                "details": "Please restart the server or contact support."
+            }), 500
+        
         # Parse request data
-        coords = request.coordinates
-        start = request.startDate
-        end = request.endDate
-        crop = request.crop
-        force_winter_detector = request.forceWinterDetector
-        index_type = request.index_type
+        data = request.get_json()
+        coords = data.get("coordinates")
+        start = data.get("startDate")
+        end = data.get("endDate")
+        crop = data.get("crop", "")  # NEW: for wheat detection
+        force_winter_detector = data.get("forceWinterDetector", False)  # NEW: override flag
+        index_type = data.get("index_type", "NDVI") # NEW: Get index type
         
         # [TIMING] Log request parameters
         coords_summary = f"[{len(coords[0]) if coords and len(coords) > 0 else 0} points]"
-        logger.info(f"[TIMING] Request started: /api/time-series | params: {{index_type: {index_type}, coords: {coords_summary}, dates: {start} to {end}, crop: {crop}}}")
+        logger.info(f"[TIMING] Request started: /api/gee_ndvi_timeseries | params: {{index_type: {index_type}, coords: {coords_summary}, dates: {start} to {end}, crop: {crop}}}")
         
         # Validate inputs
         if not coords or not start or not end:
-            raise HTTPException(status_code=400, detail="Missing input fields")
+            return jsonify({"success": False, "error": "Missing input fields"}), 400
         
         # Validate index type
         valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI"]
         if index_type not in valid_indices:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid index_type for time series. Must be one of: {', '.join(valid_indices)}"
-            )
+            return jsonify({
+                "success": False,
+                "error": f"Invalid index_type for time series. Must be one of: {', '.join(valid_indices)}"
+            }), 400
         
         # Validate polygon geometry
         if not isinstance(coords, list) or len(coords) == 0:
-            raise HTTPException(status_code=400, detail="Invalid coordinates format")
+            return jsonify({"success": False, "error": "Invalid coordinates format"}), 400
             
         # Ensure we have a valid polygon (at least 3 points)
         if len(coords[0]) < 3:
-            raise HTTPException(status_code=400, detail="Invalid polygon: must have at least 3 points")
+            return jsonify({"success": False, "error": "Invalid polygon: must have at least 3 points"}), 400
         
         # [TIMING] Check cache first
         cache_start_time = time.perf_counter()
@@ -1977,7 +1915,7 @@ async def generate_ndvi_timeseries(
                 cached_response = cache[cache_key]
                 
                 # Add wheat emergence detection if needed (only for NDVI)
-                if index_type == "NDVI" and crop and crop.lower() == 'wheat' and "emergence_date" not in cached_response:
+                if index_type == "NDVI" and crop.lower() == 'wheat' and "emergence_date" not in cached_response:
                     logger.info("Adding wheat emergence detection to cached response")
                     try:
                         wheat_emergence, wheat_confidence, wheat_metadata = detect_wheat_winter_emergence(
@@ -1992,7 +1930,7 @@ async def generate_ndvi_timeseries(
                 
                 total_elapsed = time.perf_counter() - request_start_time
                 logger.info(f"[TIMING] Total request time (cache hit): {total_elapsed:.3f}s")
-                return cached_response
+                return jsonify(cached_response)
         
         cache_elapsed = time.perf_counter() - cache_start_time
         logger.info(f"[TIMING] Cache lookup (miss): {cache_elapsed:.3f}s")
@@ -2015,14 +1953,11 @@ async def generate_ndvi_timeseries(
         if collection is None or collection_size == 0:
             total_elapsed = time.perf_counter() - request_start_time
             logger.info(f"[TIMING] Total request time (no data): {total_elapsed:.3f}s")
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "success": False, 
-                    "error": "No Sentinel-2 imagery found for the specified date range and location",
-                    "empty_collection": True
-                }
-            )
+            return jsonify({
+                "success": False, 
+                "error": "No Sentinel-2 imagery found for the specified date range and location",
+                "empty_collection": True
+            }), 404
         
         # [TIMING] Get cloud probability collection for joining
         cloud_prob_start_time = time.perf_counter()
@@ -2187,14 +2122,11 @@ async def generate_ndvi_timeseries(
         if len(index_time_series) == 0:
             total_elapsed = time.perf_counter() - request_start_time
             logger.info(f"[TIMING] Total request time (no valid readings): {total_elapsed:.3f}s")
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "success": False, 
-                    "error": f"No valid {index_type} readings could be calculated for this field",
-                    "empty_time_series": True
-                }
-            )
+            return jsonify({
+                "success": False, 
+                "error": f"No valid {index_type} readings could be calculated for this field",
+                "empty_time_series": True
+            }), 404
         
         # Sort time series by date
         index_time_series.sort(key=lambda x: x["date"])
@@ -2218,7 +2150,7 @@ async def generate_ndvi_timeseries(
         }
         
         # [TIMING] NEW: Add wheat emergence detection if this is a wheat field AND using NDVI
-        if index_type == "NDVI" and crop and crop.lower() == 'wheat':
+        if index_type == "NDVI" and crop.lower() == 'wheat':
             wheat_detection_start_time = time.perf_counter()
             logger.info("Running wheat emergence detection on time series...")
             try:
@@ -2263,10 +2195,8 @@ async def generate_ndvi_timeseries(
         total_elapsed = time.perf_counter() - request_start_time
         logger.info(f"Successfully processed {index_type} time series with S2_CLOUD_PROBABILITY. {len(index_time_series)} data points returned.")
         logger.info(f"[TIMING] Total request time: {total_elapsed:.3f}s")
-        return response
+        return jsonify(response)
 
-    except HTTPException:
-        raise
     except Exception as e:
         total_elapsed = time.perf_counter() - request_start_time
         error_message = str(e)
@@ -2275,65 +2205,33 @@ async def generate_ndvi_timeseries(
         logger.error(f"[TIMING] Total request time (error): {total_elapsed:.3f}s")
         logger.error(f"Stack trace: {stack_trace}")
         
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "success": False, 
-                "error": error_message,
-                "stack_trace": stack_trace
-            }
-        )
+        return jsonify({
+            "success": False, 
+            "error": error_message,
+            "stack_trace": stack_trace
+        }), 500
 
-# ============================================================================
-# LEGACY ENDPOINT ALIASES FOR BACKWARD COMPATIBILITY
-# ============================================================================
+# NEW: Pre-initialization at startup for preload mode
+def startup_initialization():
+    """Called during app startup when using --preload"""
+    logger.info("=== STARTUP INITIALIZATION (PRELOAD MODE) ===")
+    success, message = initialize_gee_at_startup()
+    if success:
+        logger.info(f"✓ GEE Preload Success: {message}")
+        logger.info(f"✓ Multi-Index Support: ENABLED (NDVI, EVI, SAVI, NDMI, NDWI, RGB)")
+        logger.info(f"✓ Wheat Winter Detection: ENABLED")
+        logger.info(f"✓ Spatial Adaptation Cache: READY")
+        logger.info(f"✓ Updated Visualization Ranges: NDMI [-0.2, 0.6], NDWI [0.05, 0.4]")
+        logger.info(f"✓ S2_CLOUD_PROBABILITY Method: ENABLED")
+        logger.info(f"✓ Authentication Middleware: LOADED")
+        logger.info(f"✓ Performance Timing Logs: ENABLED")
+    else:
+        logger.error(f"✗ GEE Preload Failed: {message}")
+        logger.error("✗ Application may not function properly")
 
-@app.post("/api/gee_ndvi")
-@require_auth
-async def legacy_generate_ndvi(request: LegacyNDVIRequest):
-    """Legacy endpoint - redirects to /api/map"""
-    logger.info("Legacy /api/gee_ndvi endpoint called - redirecting to /api/map")
-    
-    # Convert to new request format
-    new_request = MapGenerationRequest(
-        coordinates=request.coordinates,
-        startDate=request.startDate,
-        endDate=request.endDate,
-        index_type=request.index_type
-    )
-    
-    # Call the new endpoint
-    return await generate_ndvi(new_request, True)
-
-@app.post("/api/gee_ndvi_timeseries")
-@require_auth
-async def legacy_generate_ndvi_timeseries(request: LegacyTimeSeriesRequest):
-    """Legacy endpoint - redirects to /api/time-series"""
-    logger.info("Legacy /api/gee_ndvi_timeseries endpoint called - redirecting to /api/time-series")
-    
-    # Convert to new request format
-    new_request = TimeSeriesRequest(
-        coordinates=request.coordinates,
-        startDate=request.startDate,
-        endDate=request.endDate,
-        index_type=request.index_type,
-        crop=request.crop,
-        forceWinterDetector=request.forceWinterDetector
-    )
-    
-    # Call the new endpoint
-    return await generate_ndvi_timeseries(new_request, True)
-
-# ============================================================================
-# STARTUP EVENT
-# ============================================================================
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize GEE on startup"""
-    startup_initialization()
+# Initialize GEE immediately when module loads (for preload mode)
+startup_initialization()
 
 if __name__ == "__main__":
-    import uvicorn
     port = int(os.environ.get("PORT", 5000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=True)
