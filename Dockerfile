@@ -14,4 +14,5 @@ EXPOSE 5000
 
 # Run with Uvicorn (FastAPI's recommended server)
 # Using 4 workers for parallel processing, timeout of 180s
-CMD ["uvicorn", "gee_ndvi_generator_fastapi:app", "--host", "0.0.0.0", "--port", "5000", "--workers", "4", "--timeout-keep-alive", "180"]
+# FIXED: Changed from "gee_ndvi_generator_fastapi:app" to "gee_ndvi_generator:app"
+CMD ["uvicorn", "gee_ndvi_generator:app", "--host", "0.0.0.0", "--port", "5000", "--workers", "4", "--timeout-keep-alive", "180"]
