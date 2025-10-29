@@ -12,6 +12,5 @@ COPY . .
 # Expose port (CapRover will map this)
 EXPOSE 5000
 
-# Use Gunicorn with Uvicorn workers for better process management
-# Preload ensures GEE initializes once before forking workers
-CMD ["gunicorn", "gee_ndvi_generator:app", "--bind", "0.0.0.0:5000", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--timeout", "180", "--preload"]
+# Run with Gunicorn using preload to initialize GEE once
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "180", "--preload", "gee_ndvi_generator:app"]
