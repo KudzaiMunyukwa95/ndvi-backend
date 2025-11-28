@@ -25,6 +25,10 @@ from dotenv import load_dotenv
 from cachetools import TTLCache
 import threading
 from middleware.auth import require_auth, log_authentication_status
+from services.report_service import analyze_growth_stage, build_report_structure, validate_indices
+from services.openai_client import generate_ai_analysis
+from services.pdf_service import generate_pdf_report
+import base64
 
 # Configure real-time logging for Gunicorn multi-worker setup
 logging.basicConfig(
@@ -2210,6 +2214,121 @@ def generate_ndvi_timeseries():
             "error": error_message,
             "stack_trace": stack_trace
         }), 500
+
+# NEW: Advanced Intelligence Report Endpoint
+@app.route("/api/advanced-report", methods=["POST"])
+@require_auth
+def advanced_report():
+    try:
+        # 1. Parse Input
+        data = request.get_json()
+        field_name = data.get("field_name", "Unknown Field")
+        crop = data.get("crop", "Unknown Crop")
+        area = data.get("area", 0.0)
+        irrigation = data.get("irrigation", "rainfed")
+        planting_date = data.get("planting_date")
+        coordinates = data.get("coordinates")
+        start_date = data.get("start_date")
+        end_date = data.get("end_date")
+
+        if not coordinates or not start_date or not end_date:
+             return jsonify({"success": False, "error": "Missing required fields: coordinates, start_date, end_date"}), 400
+
+        # 2. Fetch Data from GEE
+        # Create geometry
+        # Handle GeoJSON format correctly
+        if isinstance(coordinates, dict) and coordinates.get("type") == "Polygon":
+            polygon = ee.Geometry.Polygon(coordinates["coordinates"])
+        else:
+            # Assume it's the raw list of lists format used elsewhere
+            polygon = ee.Geometry.Polygon(coordinates)
+        
+        # Get collection
+        collection, size, avg_cloud = get_optimized_collection(polygon, start_date, end_date, limit_images=False)
+        
+        if not collection or size == 0:
+             return jsonify({"success": False, "error": "No imagery found"}), 404
+
+        # Get latest image for snapshot indices
+        # Sort by date descending
+        latest_image = collection.sort("system:time_start", False).first()
+        
+        # Calculate all indices for latest image
+        indices = {}
+        for idx in ["NDVI", "EVI", "SAVI", "NDMI", "NDWI"]:
+             img = get_index(latest_image, idx)
+             val = img.reduceRegion(
+                 reducer=ee.Reducer.mean(),
+                 geometry=polygon,
+                 scale=20,
+                 maxPixels=1e9
+             ).get(idx).getInfo()
+             indices[idx] = val
+
+        # Calculate NDVI time series for growth analysis
+        # Map over collection to get NDVI and Date
+        def get_ndvi_date(img):
+             ndvi = get_index(img, "NDVI")
+             val = ndvi.reduceRegion(
+                 reducer=ee.Reducer.mean(),
+                 geometry=polygon,
+                 scale=20,
+                 maxPixels=1e9
+             ).get("NDVI")
+             return ee.Feature(None, {"ndvi": val, "date": img.date().format("YYYY-MM-dd")})
+        
+        ts_features = collection.map(get_ndvi_date).getInfo()
+        ndvi_series = [{"date": f["properties"]["date"], "ndvi": f["properties"]["ndvi"]} for f in ts_features["features"] if f["properties"]["ndvi"] is not None]
+        
+        # 3. Analyze Growth Stage
+        growth_data = analyze_growth_stage(crop, planting_date, end_date)
+        
+        # 4. Build Report Data
+        field_info = {
+            "field_name": field_name,
+            "crop": crop,
+            "area": area,
+            "irrigation": irrigation,
+            "planting_date": planting_date,
+            "coordinates": coordinates
+        }
+        
+        validated_indices = validate_indices(indices)
+        
+        # Structure for AI
+        report_context = build_report_structure(field_info, growth_data, validated_indices)
+        # Add time series summary to context for AI
+        report_context["time_series_summary"] = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "data_points": len(ndvi_series),
+            "trend": "increasing" if len(ndvi_series) > 1 and ndvi_series[-1]["ndvi"] > ndvi_series[0]["ndvi"] else "decreasing"
+        }
+
+        # 5. Generate AI Analysis
+        ai_analysis = generate_ai_analysis(report_context)
+        
+        # Merge AI analysis into report
+        final_report = build_report_structure(field_info, growth_data, validated_indices, ai_analysis)
+        
+        # 6. Generate PDF
+        pdf_buffer = generate_pdf_report(final_report)
+        pdf_base64 = base64.b64encode(pdf_buffer.getvalue()).decode('utf-8') if pdf_buffer else None
+
+        return jsonify({
+            "success": True,
+            "message": "Intelligence report generated successfully",
+            "report": final_report,
+            "pdf": {
+                "filename": f"{field_name.replace(' ', '_')}_{end_date}_report.pdf",
+                "content_type": "application/pdf",
+                "base64": pdf_base64
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Error generating advanced report: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # NEW: Pre-initialization at startup for preload mode
 def startup_initialization():
