@@ -1,0 +1,9 @@
+Flask
+flask-cors
+flask-compress
+earthengine-api
+openai>=1.0.0
+python-dotenv
+cachetools
+geohash2
+gunicorn==21.2.0
