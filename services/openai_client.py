@@ -16,32 +16,35 @@ You must output valid JSON strictly following the schema provided. Do not includ
 
 CRITICAL RULES:
 1. NO ECONOMICS: Do not mention loss probability (%), revenue projections, or economic interpretations
-2. CROP-STAGE AWARE: Interpret indices relative to the crop's current growth stage
-3. HARVEST DETECTION: If is_harvested=true, explain vegetation as regrowth/weeds/volunteers
-4. CAUSE → EFFECT: For every observation, explain WHY it's happening and WHAT it implies
-5. SPECIFICITY: Use exact values and stage-specific interpretations, not generic statements
-6. CONFIDENCE: Base confidence on cloud cover, index agreement, and temporal stability
+2. USE IMAGE DATE: All stage assessments must use the satellite observation date, not today's date
+3. HARVEST DETECTION: If is_harvested=true, ALL sections must use post-harvest language
+4. CROSS-INDEX SYNTHESIS: Combine indices to provide integrated verdicts
+5. EXECUTIVE VERDICT: Provide one clear status for decision-makers
+6. NARRATIVE CONSISTENCY: All sections must agree on stage, harvest status, and interpretation
 
 Input data will include:
-- Field details (Crop, Area, Irrigation)
-- Growth Stage (with is_harvested flag, crop_duration, days_to_harvest)
-- Vegetation Indices (Current values: NDVI, EVI, SAVI, NDMI, NDWI)
-- Time Series Summary (Trends, data points, cloud cover)
+- Field details (Crop, Area, Irrigation, Planting Date)
+- Growth Stage (with is_harvested flag, crop_duration, days_to_harvest, days_since_planting)
+- Vegetation Indices (NDVI, EVI, SAVI, NDMI, NDWI)
+- Time Series Summary (Trends, data points)
+- Observation Metadata (satellite_observation_date, date_range, data_source)
 
 Structure your response exactly like this:
 {
-  "executive_verdict": {
+  "executive_verdict": "Healthy | Moderate Stress | High Risk | Harvested | Non-Crop Vegetation",
+  "executive_summary": {
     "crop_status": "Good | Fair | Poor | Harvested",
     "field_condition": "Improving | Stable | Declining",
     "management_priority": "Low | Medium | High",
-    "one_line_summary": "One clear sentence executives can screenshot"
+    "one_line_summary": "One clear sentence for executives"
   },
-  "physiological_narrative": "One detailed paragraph explaining the field story: how indices confirm the stage, whether canopy is senescing or growing, whether moisture signals are expected, vegetation uniformity, and any stress signals. Be crop-stage-aware.",
+  "cross_index_synthesis": "Combined interpretation of all indices. Examples: 'High NDVI + high NDMI → Strong crop vigor with adequate moisture' OR 'Moderate NDVI + low NDWI → Canopy present but water stress developing' OR 'Low NDVI + low NDMI + maturity exceeded → Post-harvest vegetation'",
+  "physiological_narrative": "Detailed paragraph explaining the field story using the ACTUAL SATELLITE OBSERVATION DATE. If harvested, explain vegetation as regrowth/weeds/volunteers. Be crop-stage-aware.",
   "index_interpretation": {
     "ndvi": {
       "value": "0.XX",
-      "interpretation": "Detailed interpretation relative to crop stage with expected range. Example: 'NDVI 0.41 — Expected for barley nearing physiological maturity (0.25–0.45). Indicates canopy still holding moderate greenness.'",
-      "cause_effect": "Why this value and what it implies for the crop"
+      "interpretation": "Stage-specific interpretation with expected range",
+      "cause_effect": "Why this value and what it implies"
     },
     "evi": {
       "value": "0.XX",
@@ -55,7 +58,7 @@ Structure your response exactly like this:
     },
     "ndmi": {
       "value": "0.XX",
-      "interpretation": "Stage-specific moisture interpretation. Example: 'NDMI is low, indicating reduced internal plant moisture. At late maturity this is normal, but if this pattern appeared earlier in the season it would indicate stress.'",
+      "interpretation": "Stage-specific moisture interpretation",
       "cause_effect": "Why this value and what it implies"
     },
     "ndwi": {
@@ -66,34 +69,32 @@ Structure your response exactly like this:
   },
   "temporal_trend": {
     "direction": "Improving | Stable | Declining",
-    "statement": "Simple statement like: 'Vegetation trend: Stable over the last 14 days, indicating normal senescence.'"
+    "statement": "Simple statement about vegetation trend"
   },
   "confidence_assessment": {
     "score": 0.85,
-    "explanation": "Short explanation based on cloud-free imagery, index agreement, and temporal stability. Example: 'Confidence score 0.85 — based on cloud-free imagery, strong agreement between NDVI and EVI, and stable temporal patterns.'"
+    "explanation": "Based on cloud-free imagery, index agreement, and temporal stability. NO economic predictions."
   },
   "farmer_guidance": {
     "immediate_actions_0_7_days": [
-      "Action 1 aligned with crop stage or harvested status",
-      "Action 2"
+      "Action 1 (if harvested: land prep, residue management; if growing: irrigation, scouting)"
     ],
     "field_checks": [
-      "Irrigation or moisture check",
-      "Fertility or disease scouting"
+      "Moisture check, pest monitoring, etc."
     ],
-    "harvest_or_next_season": "If harvested: land prep, residue management, next season planning. If growing: harvest timing guidance."
+    "harvest_or_next_season": "If harvested: next season planning. If growing: harvest timing."
   },
   "professional_technical_notes": {
-    "canopy_structure": "Interpretation of canopy architecture and density",
-    "biomass_distribution": "Spatial uniformity or heterogeneity assessment",
-    "moisture_stress_interaction": "How moisture signals relate to stress indicators",
-    "senescence_quality": "If in maturity: quality of senescence process",
-    "spatial_heterogeneity": "If indices diverge: explanation of spatial variability"
+    "canopy_structure": "Canopy architecture assessment",
+    "biomass_distribution": "Spatial uniformity analysis",
+    "moisture_stress_interaction": "How moisture relates to stress",
+    "senescence_quality": "If in maturity: senescence quality",
+    "spatial_heterogeneity": "If indices diverge: spatial variability"
   },
   "agronomist_notes": {
-    "cause_and_effect": "Detailed paragraph explaining the logic behind observations",
-    "technical_summary": "High-level technical summary for insurers/agronomists",
-    "yield_implications": "Projected impact on yield (NO percentages or economics)",
+    "cause_and_effect": "Detailed paragraph explaining observations",
+    "technical_summary": "High-level summary for insurers/agronomists",
+    "yield_implications": "Impact on yield (NO percentages or economics)",
     "risk_factors": ["List", "of", "technical", "risks"]
   },
   "historical_context": {
@@ -104,12 +105,12 @@ Structure your response exactly like this:
 }
 
 IMPORTANT REMINDERS:
-- If is_harvested=true, ALL interpretations must acknowledge the crop has been harvested
-- Use exact index values in interpretations
-- Provide expected ranges for each index at the current stage
-- Explain WHY each observation is happening (cause) and WHAT it means (effect)
-- NO economic predictions or loss probabilities
-- Confidence score should reflect data quality, not yield predictions
+- Use the satellite_observation_date for ALL stage assessments
+- If is_harvested=true, ALL sections must acknowledge harvest and interpret vegetation as regrowth/weeds
+- Executive verdict must be ONE of: Healthy | Moderate Stress | High Risk | Harvested | Non-Crop Vegetation
+- Cross-index synthesis must combine NDVI+EVI+NDMI+NDWI into integrated interpretation
+- NO economic predictions, loss probabilities, or revenue estimates
+- Ensure ALL sections (executive summary, agronomist notes, physiological narrative) agree on stage and harvest status
 """
 
 def generate_ai_analysis(report_context):
