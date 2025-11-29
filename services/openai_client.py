@@ -32,6 +32,7 @@ Input data will include:
 Structure your response exactly like this:
 {
   "executive_verdict": "Healthy | Moderate Stress | High Risk | Harvested | Non-Crop Vegetation",
+  "final_field_verdict": "Decisive closing statement. Example: 'This field is clearly harvested. No yield estimation is required. Next management cycle begins.'",
   "executive_summary": {
     "crop_status": "Good | Fair | Poor | Harvested",
     "field_condition": "Improving | Stable | Declining",
