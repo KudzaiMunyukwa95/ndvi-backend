@@ -301,6 +301,71 @@ def generate_pdf_report(report_data):
             story.append(Paragraph(physiological, styles['ReportBodyText']))
             story.append(Spacer(1, 12))
 
+        # === VEGETATION INDICES SUMMARY TABLE ===
+        story.append(Paragraph("Vegetation Indices Summary", styles['SectionHeader']))
+        
+        # Static descriptions
+        index_descriptions = {
+            "NDVI": "Measures crop vigor & biomass",
+            "EVI": "Enhanced vigor (high biomass)",
+            "SAVI": "Soil-adjusted vigor",
+            "NDMI": "Vegetation moisture content",
+            "NDWI": "Leaf water content"
+        }
+        
+        indices_data = report_data.get("vegetation_indices", {})
+        
+        # Prepare table data
+        summary_data = [["Index", "What it is", "Value", "Interpretation"]]
+        
+        for idx in ["NDVI", "EVI", "SAVI", "NDMI", "NDWI"]:
+            idx_lower = idx.lower()
+            
+            # Get value
+            val = indices_data.get(idx_lower, {}).get("current", "N/A")
+            if isinstance(val, (float, int)):
+                val_str = f"{val:.2f}"
+            else:
+                val_str = str(val)
+                
+            # Get interpretation
+            interp = index_interp.get(idx_lower, {}).get("interpretation", "Pending...")
+            # Truncate if too long for table
+            if len(interp) > 100:
+                interp = interp[:97] + "..."
+                
+            summary_data.append([
+                idx,
+                index_descriptions.get(idx, ""),
+                val_str,
+                interp
+            ])
+            
+        # Create table
+        summary_table = Table(summary_data, colWidths=[0.8*inch, 1.5*inch, 0.8*inch, 3.5*inch])
+        summary_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), YIELDERA_DARK_TEAL),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('TOPPADDING', (0, 0), (-1, 0), 8),
+            
+            ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('GRID', (0, 0), (-1, -1), 1, colors.white),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        story.append(summary_table)
+        story.append(Spacer(1, 15))
+
         story.append(Paragraph("Index-by-Index Interpretation", styles['SectionHeader']))
         
         for idx_name in ["ndvi", "evi", "savi", "ndmi", "ndwi"]:
