@@ -284,7 +284,8 @@ def generate_pdf_report(report_data):
             # Create a distinct box or style for the final verdict
             story.append(Paragraph(f"<b>FINAL VERDICT:</b> {final_verdict}", styles['ReportBodyText']))
         
-        story.append(PageBreak())
+        # Use spacer instead of hard page break to allow natural flow
+        story.append(Spacer(1, 20))
 
         # === PAGE 2: ANALYSIS ===
         cross_synthesis = report_data.get("cross_index_synthesis", "")
@@ -294,12 +295,12 @@ def generate_pdf_report(report_data):
         if cross_synthesis and cross_synthesis != "Analysis pending...":
             story.append(Paragraph("Cross-Index Synthesis", styles['SectionHeader']))
             story.append(Paragraph(cross_synthesis, styles['ReportBodyText']))
-            story.append(Spacer(1, 12))
+            story.append(Spacer(1, 10))
 
         if physiological and physiological != "Analysis pending...":
             story.append(Paragraph("Physiological Narrative", styles['SectionHeader']))
             story.append(Paragraph(physiological, styles['ReportBodyText']))
-            story.append(Spacer(1, 12))
+            story.append(Spacer(1, 10))
 
         # === VEGETATION INDICES SUMMARY TABLE ===
         story.append(Paragraph("Vegetation Indices Summary", styles['SectionHeader']))
@@ -372,7 +373,7 @@ def generate_pdf_report(report_data):
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
         story.append(summary_table)
-        story.append(Spacer(1, 15))
+        story.append(Spacer(1, 12))
 
         story.append(Paragraph("Index-by-Index Interpretation", styles['SectionHeader']))
         
@@ -386,11 +387,12 @@ def generate_pdf_report(report_data):
                 cause_effect = idx_data.get("cause_effect", "")
                 if cause_effect:
                     story.append(Paragraph(f"<i>Why & What:</i> {cause_effect}", styles['Normal']))
-                story.append(Spacer(1, 8))
+                story.append(Spacer(1, 6))
         
-        story.append(PageBreak())
+        # Natural page break - let content flow
+        story.append(Spacer(1, 15))
 
-        # === PAGE 3: TRENDS & GUIDANCE ===
+        # === TRENDS & GUIDANCE ===
         temporal = report_data.get("temporal_trend", {})
         confidence = report_data.get("confidence_assessment", {})
         farmer = report_data.get("farmer_guidance", {})
@@ -423,9 +425,10 @@ def generate_pdf_report(report_data):
             story.append(Paragraph("<b>Harvest / Next Season:</b>", styles['SubHeader']))
             story.append(Paragraph(harvest_guidance, styles['ReportBodyText']))
         
-        story.append(PageBreak())
+        # Natural page break - let content flow
+        story.append(Spacer(1, 15))
 
-        # === PAGE 4: PROFESSIONAL ANALYSIS ===
+        # === PROFESSIONAL ANALYSIS ===
         tech_notes = report_data.get("professional_technical_notes", {})
         agronomist = report_data.get("agronomist_notes", {})
         historical = report_data.get("historical_context", {})
