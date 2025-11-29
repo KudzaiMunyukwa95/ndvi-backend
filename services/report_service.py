@@ -234,12 +234,14 @@ def build_report_structure(
     # Default empty analysis if AI fails or not provided yet
     if not ai_analysis:
         ai_analysis = {
-            "executive_verdict": {
+            "executive_verdict": "Pending",
+            "executive_summary": {
                 "crop_status": "Pending",
                 "field_condition": "Pending",
                 "management_priority": "Pending",
                 "one_line_summary": "Analysis pending..."
             },
+            "cross_index_synthesis": "Analysis pending...",
             "physiological_narrative": "Analysis pending...",
             "index_interpretation": {},
             "temporal_trend": {
@@ -280,7 +282,9 @@ def build_report_structure(
         "database_field_info": field_info,
         "growth_stage": growth_data,
         "vegetation_indices": indices_data,
-        "executive_verdict": ai_analysis.get("executive_verdict", {}),
+        "executive_verdict": ai_analysis.get("executive_verdict", "Pending"),
+        "executive_summary": ai_analysis.get("executive_summary", {}),
+        "cross_index_synthesis": ai_analysis.get("cross_index_synthesis", ""),
         "physiological_narrative": ai_analysis.get("physiological_narrative", ""),
         "index_interpretation": ai_analysis.get("index_interpretation", {}),
         "temporal_trend": ai_analysis.get("temporal_trend", {}),
