@@ -28,49 +28,69 @@ Input data will include:
 
 Structure your response exactly like this:
 {
-  "multi_index_assessment": {
-    "canopy_analysis": "Detailed scientific analysis of canopy density and vigor based on NDVI/EVI.",
-    "combined_interpretation": "Synthesis of all indices (e.g., relating moisture (NDMI) to vigor (NDVI)).",
-    "indices_summary": {
-      "biomass_vigor": "Short summary of biomass status.",
-      "canopy_development": "Short summary of development stage relative to expected.",
-      "moisture_status": "Assessment of water content in vegetation.",
-      "stress_indicators": "Any signs of biotic/abiotic stress."
+  "executive_verdict": {
+    "verdict": "Overall Verdict: [Good/Fair/Poor] crop condition with [upward/downward/stable] trajectory. [One sentence summary].",
+    "trajectory_statement": "NDVI trend (last 30-90 days): [Upward/Stable/Downward] trajectory indicating [reason]."
+  },
+  "management_priority": [
+    "Priority 1: [Action]",
+    "Priority 2: [Action]"
+  ],
+  "insurance_risk_summary": {
+    "risk_level": "Low | Medium | High",
+    "summary": "Insurance Risk Level: [Level] — [Reasoning based on moisture/biomass signals]."
+  },
+  "index_interpretation": {
+    "ndvi": {
+      "value": "Current Value",
+      "physical_meaning": "Canopy vigor/biomass",
+      "expectation": "Below/Normal/Above expected for this stage"
     },
-    "stress_indicators": ["List", "of", "specific", "stress", "signals"]
+    "evi": {
+      "value": "Current Value",
+      "physical_meaning": "Canopy density/chlorophyll",
+      "expectation": "Below/Normal/Above expected for this stage"
+    },
+    "savi": {
+      "value": "Current Value",
+      "physical_meaning": "Soil-adjusted vigor",
+      "expectation": "Below/Normal/Above expected for this stage"
+    },
+    "ndmi": {
+      "value": "Current Value",
+      "physical_meaning": "Vegetation water content",
+      "expectation": "Below/Normal/Above expected for this stage"
+    },
+    "ndwi": {
+      "value": "Current Value",
+      "physical_meaning": "Surface water/saturation",
+      "expectation": "Below/Normal/Above expected for this stage"
+    }
+  },
+  "consistency_check": {
+    "status": "Consistent | Conflicting",
+    "statement": "Statement on whether indices agree (e.g., 'NDVI and EVI agree on moderate vigor') or conflict."
+  },
+  "practical_guidance": {
+    "crop_status": "Crop is [on-track / slightly behind / at risk]",
+    "yield_risk": "Expect [moderate yield / risk to yield]",
+    "action_timeline": "Take action within [X] days to avoid deterioration"
   },
   "agronomist_notes": {
-    "index_analysis": {
-      "ndvi_interpretation": "Specific technical note on NDVI.",
-      "evi_interpretation": "Specific technical note on EVI.",
-      "ndmi_interpretation": "Specific technical note on NDMI (moisture).",
-      "ndwi_interpretation": "Specific technical note on NDWI (water stress/logging)."
-    },
+    "cause_and_effect": "Single paragraph explaining the logic (e.g., 'NDVI low + NDMI low -> likely moisture stress').",
     "technical_summary": "High-level technical summary for an insurer/agronomist.",
     "yield_implications": "Projected impact on yield based on current status.",
     "risk_factors": ["List", "of", "technical", "risks"]
   },
+  "farmland_physiology": "2-3 lines describing the crop stage physiology (e.g., 'At 43 days, maize is in vegetative stage...').",
   "farmer_narrative": {
     "plain_language_summary": "Simple, encouraging, but honest summary for the farmer.",
     "immediate_actions": ["Action 1 (Urgent)", "Action 2"],
     "short_term_actions": ["Action 1 (Next 7-14 days)"],
     "seasonal_actions": ["Action 1 (Rest of season)"]
   },
-  "risk_finance_view": {
-    "risk_level": "Low | Medium | High",
-    "underwriting_signals": ["Signal 1", "Signal 2"],
-    "yield_outlook": "Positive | Stable | At Risk | Critical",
-    "contract_farming_notes": "Notes relevant for contract farming enforcement/support.",
-    "credit_implications": "Assessment of credit risk based on crop performance."
-  },
-  "professional_summary": {
-    "current_position": "Where the crop stands today vs ideal.",
-    "stakeholder_guidance": "Advice for banks/insurers/aggregators.",
-    "trajectory_analysis": "Where the crop is heading if current trends continue."
-  },
   "historical_context": {
-    "comparison_period": "Current vs Historical average (if data available, else general)",
-    "historical_percentile": null,
+    "comparison_period": "Current vs Historical average",
     "seasonal_trend": "Description of the trend (improving, declining, stable).",
     "trend_description": "Contextual explanation of the trend."
   }
