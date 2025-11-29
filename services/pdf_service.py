@@ -321,8 +321,13 @@ def generate_pdf_report(report_data):
         for idx in ["NDVI", "EVI", "SAVI", "NDMI", "NDWI"]:
             idx_lower = idx.lower()
             
-            # Get value
-            val = indices_data.get(idx_lower, {}).get("current", "N/A")
+            # Get value - handle both direct float and dictionary (just in case)
+            val_data = indices_data.get(idx_lower, "N/A")
+            if isinstance(val_data, dict):
+                val = val_data.get("current", "N/A")
+            else:
+                val = val_data
+
             if isinstance(val, (float, int)):
                 val_str = f"{val:.2f}"
             else:
