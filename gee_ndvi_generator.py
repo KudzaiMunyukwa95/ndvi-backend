@@ -7,6 +7,11 @@ Performance timing logs added for deployment speed measurement.
 """
 
 import os
+from dotenv import load_dotenv
+
+# Load environment variables immediately
+load_dotenv()
+
 import json
 import ee
 import traceback
@@ -21,7 +26,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_compress import Compress
 from openai import OpenAI
-from dotenv import load_dotenv
+# from dotenv import load_dotenv # Removed redundant import
 from cachetools import TTLCache
 import threading
 from middleware.auth import require_auth, log_authentication_status
@@ -41,8 +46,8 @@ logger = logging.getLogger(__name__)
 # Force stdout line buffering for immediate log output
 sys.stdout.reconfigure(line_buffering=True)
 
-# Load environment variables
-load_dotenv()
+# Load environment variables - Moved to top
+# load_dotenv() 
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -2253,6 +2258,13 @@ def advanced_report():
         # Sort by date descending
         latest_image = collection.sort("system:time_start", False).first()
         
+        # CRITICAL FIX: Extract actual satellite image observation date
+        image_date_ms = latest_image.get("system:time_start").getInfo()
+        image_date_obj = datetime.datetime.fromtimestamp(image_date_ms / 1000)
+        image_date = image_date_obj.strftime("%Y-%m-%d")
+        
+        logger.info(f"Using satellite image observation date: {image_date}")
+        
         # Calculate all indices for latest image
         indices = {}
         for idx in ["NDVI", "EVI", "SAVI", "NDMI", "NDWI"]:
@@ -2280,8 +2292,8 @@ def advanced_report():
         ts_features = collection.map(get_ndvi_date).getInfo()
         ndvi_series = [{"date": f["properties"]["date"], "ndvi": f["properties"]["ndvi"]} for f in ts_features["features"] if f["properties"]["ndvi"] is not None]
         
-        # 3. Analyze Growth Stage
-        growth_data = analyze_growth_stage(crop, planting_date, end_date)
+        # 3. Analyze Growth Stage using ACTUAL IMAGE DATE (not end_date)
+        growth_data = analyze_growth_stage(crop, planting_date, image_date)
         
         # 4. Build Report Data
         field_info = {
@@ -2295,6 +2307,15 @@ def advanced_report():
         
         validated_indices = validate_indices(indices)
         
+        # Add observation metadata
+        observation_metadata = {
+            "satellite_observation_date": image_date,
+            "date_range_start": start_date,
+            "date_range_end": end_date,
+            "data_source": "Sentinel-2 L2A",
+            "number_of_observations": len(ndvi_series)
+        }
+        
         # Structure for AI
         report_context = build_report_structure(field_info, growth_data, validated_indices)
         # Add time series summary to context for AI
@@ -2304,12 +2325,16 @@ def advanced_report():
             "data_points": len(ndvi_series),
             "trend": "increasing" if len(ndvi_series) > 1 and ndvi_series[-1]["ndvi"] > ndvi_series[0]["ndvi"] else "decreasing"
         }
+        # Add observation metadata
+        report_context["observation_metadata"] = observation_metadata
 
         # 5. Generate AI Analysis
         ai_analysis = generate_ai_analysis(report_context)
         
         # Merge AI analysis into report
         final_report = build_report_structure(field_info, growth_data, validated_indices, ai_analysis)
+        # Add observation metadata to final report
+        final_report["observation_metadata"] = observation_metadata
         
         # 6. Generate PDF
         pdf_buffer = generate_pdf_report(final_report)
@@ -2320,7 +2345,7 @@ def advanced_report():
             "message": "Intelligence report generated successfully",
             "report": final_report,
             "pdf": {
-                "filename": f"{field_name.replace(' ', '_')}_{end_date}_report.pdf",
+                "filename": f"{field_name.replace(' ', '_')}_{image_date}_report.pdf",
                 "content_type": "application/pdf",
                 "base64": pdf_base64
             }
