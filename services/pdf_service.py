@@ -335,19 +335,22 @@ def generate_pdf_report(report_data):
                 
             # Get interpretation
             interp = index_interp.get(idx_lower, {}).get("interpretation", "Pending...")
-            # Truncate if too long for table
-            if len(interp) > 100:
-                interp = interp[:97] + "..."
+            
+            # Wrap text in Paragraphs for proper wrapping
+            # Use a slightly smaller font for the table content if needed, or standard ReportBodyText
+            what_it_is = Paragraph(index_descriptions.get(idx, ""), styles['ReportBodyText'])
+            interpretation = Paragraph(interp, styles['ReportBodyText'])
                 
             summary_data.append([
                 idx,
-                index_descriptions.get(idx, ""),
+                what_it_is,
                 val_str,
-                interp
+                interpretation
             ])
             
         # Create table
-        summary_table = Table(summary_data, colWidths=[0.8*inch, 1.5*inch, 0.8*inch, 3.5*inch])
+        # Adjusted widths: [Index, What it is, Value, Interpretation]
+        summary_table = Table(summary_data, colWidths=[0.7*inch, 1.4*inch, 0.7*inch, 3.8*inch])
         summary_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), YIELDERA_DARK_TEAL),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -362,7 +365,7 @@ def generate_pdf_report(report_data):
             ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 1), (-1, -1), 9),
             ('GRID', (0, 0), (-1, -1), 1, colors.white),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'), # Align top for wrapped text
             ('LEFTPADDING', (0, 0), (-1, -1), 6),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('TOPPADDING', (0, 0), (-1, -1), 6),
