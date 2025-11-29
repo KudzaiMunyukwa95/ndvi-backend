@@ -141,7 +141,7 @@ def generate_pdf_report(report_data):
             fontName='Helvetica-Bold'
         ))
         styles.add(ParagraphStyle(
-            name='BodyText',
+            name='ReportBodyText',
             parent=styles['Normal'],
             fontSize=10,
             alignment=TA_JUSTIFY,
@@ -270,7 +270,7 @@ def generate_pdf_report(report_data):
         ]))
         story.append(verdict_table)
         story.append(Spacer(1, 8))
-        story.append(Paragraph(exec_summary.get("one_line_summary", "Analysis pending..."), styles['BodyText']))
+        story.append(Paragraph(exec_summary.get("one_line_summary", "Analysis pending..."), styles['ReportBodyText']))
         
         story.append(PageBreak())
 
@@ -281,12 +281,12 @@ def generate_pdf_report(report_data):
         
         if cross_synthesis and cross_synthesis != "Analysis pending...":
             story.append(Paragraph("Cross-Index Synthesis", styles['SectionHeader']))
-            story.append(Paragraph(cross_synthesis, styles['BodyText']))
+            story.append(Paragraph(cross_synthesis, styles['ReportBodyText']))
             story.append(Spacer(1, 12))
 
         if physiological and physiological != "Analysis pending...":
             story.append(Paragraph("Physiological Narrative", styles['SectionHeader']))
-            story.append(Paragraph(physiological, styles['BodyText']))
+            story.append(Paragraph(physiological, styles['ReportBodyText']))
             story.append(Spacer(1, 12))
 
         story.append(Paragraph("Index-by-Index Interpretation", styles['SectionHeader']))
@@ -296,7 +296,7 @@ def generate_pdf_report(report_data):
             if idx_data:
                 idx_upper = idx_name.upper()
                 story.append(Paragraph(f"<b>{idx_upper}:</b>", styles['SubHeader']))
-                story.append(Paragraph(idx_data.get("interpretation", "N/A"), styles['BodyText']))
+                story.append(Paragraph(idx_data.get("interpretation", "N/A"), styles['ReportBodyText']))
                 
                 cause_effect = idx_data.get("cause_effect", "")
                 if cause_effect:
@@ -312,13 +312,13 @@ def generate_pdf_report(report_data):
         
         story.append(Paragraph("Temporal Trend", styles['SectionHeader']))
         story.append(Paragraph(f"<b>Direction:</b> {temporal.get('direction', 'Unknown')}", styles['Normal']))
-        story.append(Paragraph(temporal.get("statement", "N/A"), styles['BodyText']))
+        story.append(Paragraph(temporal.get("statement", "N/A"), styles['ReportBodyText']))
         story.append(Spacer(1, 12))
 
         story.append(Paragraph("Confidence Assessment", styles['SectionHeader']))
         conf_score = confidence.get("score", 0.0)
         story.append(Paragraph(f"<b>Confidence Score:</b> {conf_score:.2f}", styles['Normal']))
-        story.append(Paragraph(confidence.get("explanation", "N/A"), styles['BodyText']))
+        story.append(Paragraph(confidence.get("explanation", "N/A"), styles['ReportBodyText']))
         story.append(Spacer(1, 12))
 
         story.append(Paragraph("Farmer Guidance", styles['SectionHeader']))
@@ -336,7 +336,7 @@ def generate_pdf_report(report_data):
         harvest_guidance = farmer.get("harvest_or_next_season", "")
         if harvest_guidance and harvest_guidance != "Pending...":
             story.append(Paragraph("<b>Harvest / Next Season:</b>", styles['SubHeader']))
-            story.append(Paragraph(harvest_guidance, styles['BodyText']))
+            story.append(Paragraph(harvest_guidance, styles['ReportBodyText']))
         
         story.append(PageBreak())
 
@@ -356,7 +356,7 @@ def generate_pdf_report(report_data):
         ]:
             value = tech_notes.get(key, "")
             if value and value != "Pending...":
-                story.append(Paragraph(f"<b>{label}:</b> {value}", styles['BodyText']))
+                story.append(Paragraph(f"<b>{label}:</b> {value}", styles['ReportBodyText']))
         
         story.append(Spacer(1, 12))
 
@@ -365,11 +365,11 @@ def generate_pdf_report(report_data):
         cause_effect = agronomist.get("cause_and_effect", "")
         if cause_effect and cause_effect != "Pending analysis...":
             story.append(Paragraph("<b>Cause & Effect Analysis:</b>", styles['SubHeader']))
-            story.append(Paragraph(cause_effect, styles['BodyText']))
+            story.append(Paragraph(cause_effect, styles['ReportBodyText']))
             story.append(Spacer(1, 8))
         
-        story.append(Paragraph(f"<b>Technical Summary:</b> {agronomist.get('technical_summary', 'N/A')}", styles['BodyText']))
-        story.append(Paragraph(f"<b>Yield Implications:</b> {agronomist.get('yield_implications', 'N/A')}", styles['BodyText']))
+        story.append(Paragraph(f"<b>Technical Summary:</b> {agronomist.get('technical_summary', 'N/A')}", styles['ReportBodyText']))
+        story.append(Paragraph(f"<b>Yield Implications:</b> {agronomist.get('yield_implications', 'N/A')}", styles['ReportBodyText']))
         story.append(Spacer(1, 8))
         
         risk_factors = agronomist.get("risk_factors", [])
@@ -383,7 +383,7 @@ def generate_pdf_report(report_data):
         story.append(Paragraph("Historical Context", styles['SectionHeader']))
         story.append(Paragraph(f"<b>Comparison Period:</b> {historical.get('comparison_period', 'N/A')}", styles['Normal']))
         story.append(Paragraph(f"<b>Seasonal Trend:</b> {historical.get('seasonal_trend', 'N/A')}", styles['Normal']))
-        story.append(Paragraph(f"<b>Trend Description:</b> {historical.get('trend_description', 'N/A')}", styles['BodyText']))
+        story.append(Paragraph(f"<b>Trend Description:</b> {historical.get('trend_description', 'N/A')}", styles['ReportBodyText']))
 
         # Build PDF with header/footer
         report_date = observation_meta.get("satellite_observation_date", report_data.get("report_date", "N/A"))
