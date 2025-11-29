@@ -2260,7 +2260,7 @@ def advanced_report():
         
         # CRITICAL FIX: Extract actual satellite image observation date
         image_date_ms = latest_image.get("system:time_start").getInfo()
-        image_date_obj = datetime.datetime.fromtimestamp(image_date_ms / 1000)
+        image_date_obj = datetime.fromtimestamp(image_date_ms / 1000)
         image_date = image_date_obj.strftime("%Y-%m-%d")
         
         logger.info(f"Using satellite image observation date: {image_date}")
