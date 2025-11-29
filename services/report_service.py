@@ -166,44 +166,40 @@ def build_report_structure(
     # Default empty analysis if AI fails or not provided yet
     if not ai_analysis:
         ai_analysis = {
-            "multi_index_assessment": {
-                "canopy_analysis": "Pending analysis...",
-                "combined_interpretation": "Pending analysis...",
-                "indices_summary": {
-                    "biomass_vigor": "Pending...",
-                    "canopy_development": "Pending...",
-                    "moisture_status": "Pending...",
-                    "stress_indicators": "Pending..."
-                },
-                "stress_indicators": []
+            "executive_verdict": {
+                "verdict": "Pending analysis...",
+                "trajectory_statement": "Pending analysis..."
+            },
+            "management_priority": [],
+            "insurance_risk_summary": {
+                "risk_level": "Unknown",
+                "summary": "Pending analysis..."
+            },
+            "index_interpretation": {},
+            "consistency_check": {
+                "status": "Unknown",
+                "statement": "Pending analysis..."
+            },
+            "practical_guidance": {
+                "crop_status": "Pending...",
+                "yield_risk": "Pending...",
+                "action_timeline": "Pending..."
             },
             "agronomist_notes": {
-                "index_analysis": {},
+                "cause_and_effect": "Pending analysis...",
                 "technical_summary": "Pending analysis...",
                 "yield_implications": "Pending analysis...",
                 "risk_factors": []
             },
+            "farmland_physiology": "Pending analysis...",
             "farmer_narrative": {
                 "plain_language_summary": "Pending analysis...",
                 "immediate_actions": [],
                 "short_term_actions": [],
                 "seasonal_actions": []
             },
-            "risk_finance_view": {
-                "risk_level": "Unknown",
-                "underwriting_signals": [],
-                "yield_outlook": "Unknown",
-                "contract_farming_notes": "Pending...",
-                "credit_implications": "Pending..."
-            },
-            "professional_summary": {
-                "current_position": "Pending...",
-                "stakeholder_guidance": "Pending...",
-                "trajectory_analysis": "Pending..."
-            },
-             "historical_context": {
+            "historical_context": {
                 "comparison_period": "Pending...",
-                "historical_percentile": None,
                 "seasonal_trend": "Pending...",
                 "trend_description": "Pending..."
             }
@@ -214,11 +210,15 @@ def build_report_structure(
         "database_field_info": field_info,
         "growth_stage": growth_data,
         "vegetation_indices": indices_data,
-        "multi_index_assessment": ai_analysis.get("multi_index_assessment", {}),
+        "executive_verdict": ai_analysis.get("executive_verdict", {}),
+        "management_priority": ai_analysis.get("management_priority", []),
+        "insurance_risk_summary": ai_analysis.get("insurance_risk_summary", {}),
+        "index_interpretation": ai_analysis.get("index_interpretation", {}),
+        "consistency_check": ai_analysis.get("consistency_check", {}),
+        "practical_guidance": ai_analysis.get("practical_guidance", {}),
         "agronomist_notes": ai_analysis.get("agronomist_notes", {}),
+        "farmland_physiology": ai_analysis.get("farmland_physiology", ""),
         "farmer_narrative": ai_analysis.get("farmer_narrative", {}),
-        "risk_finance_view": ai_analysis.get("risk_finance_view", {}),
-        "professional_summary": ai_analysis.get("professional_summary", {}),
         "historical_context": ai_analysis.get("historical_context", {})
     }
     
