@@ -3,29 +3,74 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Crop growth stages (approximate days)
-# This can be refined with more specific crop data
-CROP_STAGES = {
+# Comprehensive crop profiles with durations
+CROP_PROFILES = {
     "Maize": {
+        "duration_days": 135,
         "emergence": (0, 10),
         "vegetative": (11, 60),
         "reproductive": (61, 100),
-        "maturity": (101, 140)
+        "maturity": (101, 135)
     },
     "Soyabeans": {
+        "duration_days": 110,
         "emergence": (0, 10),
         "vegetative": (11, 45),
         "reproductive": (46, 90),
-        "maturity": (91, 120)
+        "maturity": (91, 110)
     },
     "Wheat": {
+        "duration_days": 120,
         "emergence": (0, 10),
         "vegetative": (11, 60),
         "reproductive": (61, 100),
-        "maturity": (101, 130)
+        "maturity": (101, 120)
+    },
+    "Sorghum": {
+        "duration_days": 100,
+        "emergence": (0, 8),
+        "vegetative": (9, 50),
+        "reproductive": (51, 85),
+        "maturity": (86, 100)
+    },
+    "Cotton": {
+        "duration_days": 140,
+        "emergence": (0, 10),
+        "vegetative": (11, 70),
+        "reproductive": (71, 120),
+        "maturity": (121, 140)
+    },
+    "Groundnuts": {
+        "duration_days": 115,
+        "emergence": (0, 10),
+        "vegetative": (11, 50),
+        "reproductive": (51, 95),
+        "maturity": (96, 115)
+    },
+    "Barley": {
+        "duration_days": 90,
+        "emergence": (0, 8),
+        "vegetative": (9, 45),
+        "reproductive": (46, 75),
+        "maturity": (76, 90)
+    },
+    "Millet": {
+        "duration_days": 100,
+        "emergence": (0, 8),
+        "vegetative": (9, 45),
+        "reproductive": (46, 80),
+        "maturity": (81, 100)
+    },
+    "Tobacco": {
+        "duration_days": 130,
+        "emergence": (0, 10),
+        "vegetative": (11, 60),
+        "reproductive": (61, 110),
+        "maturity": (111, 130)
     },
     # Default fallback
     "default": {
+        "duration_days": 120,
         "emergence": (0, 10),
         "vegetative": (11, 50),
         "reproductive": (51, 90),
@@ -33,16 +78,20 @@ CROP_STAGES = {
     }
 }
 
+# Harvest detection threshold (days beyond crop duration)
+HARVEST_THRESHOLD_DAYS = 30
+
 def analyze_growth_stage(crop, planting_date, current_date_str=None):
     """
-    Determine growth stage and days since planting.
+    Determine growth stage and days since planting with harvest detection.
     """
     if not planting_date:
         return {
             "stage": "unknown",
             "stage_description": "Planting date not provided",
             "days_since_planting": None,
-            "critical_factors": []
+            "critical_factors": [],
+            "is_harvested": False
         }
 
     try:
@@ -59,35 +108,53 @@ def analyze_growth_stage(crop, planting_date, current_date_str=None):
                 "stage": "planned",
                 "stage_description": f"Planting planned in {abs(days)} days",
                 "days_since_planting": days,
-                "critical_factors": ["Soil preparation", "Seed acquisition"]
+                "critical_factors": ["Soil preparation", "Seed acquisition"],
+                "is_harvested": False
             }
 
-        stages = CROP_STAGES.get(crop, CROP_STAGES["default"])
+        # Get crop profile
+        profile = CROP_PROFILES.get(crop, CROP_PROFILES["default"])
+        duration = profile["duration_days"]
         
+        # Check if crop has been harvested (days > duration + threshold)
+        if days > (duration + HARVEST_THRESHOLD_DAYS):
+            return {
+                "stage": "harvested",
+                "stage_description": f"Crop harvested (expected duration: {duration} days). Observed vegetation likely from regrowth, weeds, or volunteer plants.",
+                "days_since_planting": days,
+                "critical_factors": ["Land preparation", "Residue management", "Next season planning"],
+                "is_harvested": True,
+                "crop_duration": duration
+            }
+        
+        # Determine current stage
         stage = "unknown"
         description = "Unknown stage"
         
-        if days <= stages["emergence"][1]:
+        if days <= profile["emergence"][1]:
             stage = "emergence"
-            description = "Germination and early seedling growth"
-        elif days <= stages["vegetative"][1]:
+            description = "Germination and early seedling establishment"
+        elif days <= profile["vegetative"][1]:
             stage = "vegetative"
-            description = "Leaf development and stem elongation"
-        elif days <= stages["reproductive"][1]:
+            description = "Active leaf development and canopy expansion"
+        elif days <= profile["reproductive"][1]:
             stage = "reproductive"
-            description = "Flowering and grain filling"
-        elif days <= stages["maturity"][1]:
+            description = "Flowering, pollination, and grain/fruit filling"
+        elif days <= profile["maturity"][1]:
             stage = "maturity"
-            description = "Ripening and harvest readiness"
+            description = "Physiological maturity and senescence"
         else:
-            stage = "maturity" # Or post-harvest?
-            description = "Late maturity or post-harvest"
+            stage = "late_maturity"
+            description = f"Late maturity or post-harvest (within {HARVEST_THRESHOLD_DAYS} days of expected harvest)"
 
         return {
             "stage": stage,
             "stage_description": description,
             "days_since_planting": days,
-            "critical_factors": _get_critical_factors(stage)
+            "critical_factors": _get_critical_factors(stage),
+            "is_harvested": False,
+            "crop_duration": duration,
+            "days_to_harvest": max(0, duration - days) if days < duration else 0
         }
 
     except Exception as e:
@@ -96,7 +163,8 @@ def analyze_growth_stage(crop, planting_date, current_date_str=None):
             "stage": "unknown",
             "stage_description": "Error calculating stage",
             "days_since_planting": None,
-            "critical_factors": []
+            "critical_factors": [],
+            "is_harvested": False
         }
 
 def _get_critical_factors(stage):
@@ -167,36 +235,38 @@ def build_report_structure(
     if not ai_analysis:
         ai_analysis = {
             "executive_verdict": {
-                "verdict": "Pending analysis...",
-                "trajectory_statement": "Pending analysis..."
+                "crop_status": "Pending",
+                "field_condition": "Pending",
+                "management_priority": "Pending",
+                "one_line_summary": "Analysis pending..."
             },
-            "management_priority": [],
-            "insurance_risk_summary": {
-                "risk_level": "Unknown",
-                "summary": "Pending analysis..."
-            },
+            "physiological_narrative": "Analysis pending...",
             "index_interpretation": {},
-            "consistency_check": {
-                "status": "Unknown",
+            "temporal_trend": {
+                "direction": "Unknown",
                 "statement": "Pending analysis..."
             },
-            "practical_guidance": {
-                "crop_status": "Pending...",
-                "yield_risk": "Pending...",
-                "action_timeline": "Pending..."
+            "confidence_assessment": {
+                "score": 0.0,
+                "explanation": "Pending analysis..."
+            },
+            "farmer_guidance": {
+                "immediate_actions_0_7_days": [],
+                "field_checks": [],
+                "harvest_or_next_season": "Pending..."
+            },
+            "professional_technical_notes": {
+                "canopy_structure": "Pending...",
+                "biomass_distribution": "Pending...",
+                "moisture_stress_interaction": "Pending...",
+                "senescence_quality": "Pending...",
+                "spatial_heterogeneity": "Pending..."
             },
             "agronomist_notes": {
                 "cause_and_effect": "Pending analysis...",
                 "technical_summary": "Pending analysis...",
                 "yield_implications": "Pending analysis...",
                 "risk_factors": []
-            },
-            "farmland_physiology": "Pending analysis...",
-            "farmer_narrative": {
-                "plain_language_summary": "Pending analysis...",
-                "immediate_actions": [],
-                "short_term_actions": [],
-                "seasonal_actions": []
             },
             "historical_context": {
                 "comparison_period": "Pending...",
@@ -211,14 +281,13 @@ def build_report_structure(
         "growth_stage": growth_data,
         "vegetation_indices": indices_data,
         "executive_verdict": ai_analysis.get("executive_verdict", {}),
-        "management_priority": ai_analysis.get("management_priority", []),
-        "insurance_risk_summary": ai_analysis.get("insurance_risk_summary", {}),
+        "physiological_narrative": ai_analysis.get("physiological_narrative", ""),
         "index_interpretation": ai_analysis.get("index_interpretation", {}),
-        "consistency_check": ai_analysis.get("consistency_check", {}),
-        "practical_guidance": ai_analysis.get("practical_guidance", {}),
+        "temporal_trend": ai_analysis.get("temporal_trend", {}),
+        "confidence_assessment": ai_analysis.get("confidence_assessment", {}),
+        "farmer_guidance": ai_analysis.get("farmer_guidance", {}),
+        "professional_technical_notes": ai_analysis.get("professional_technical_notes", {}),
         "agronomist_notes": ai_analysis.get("agronomist_notes", {}),
-        "farmland_physiology": ai_analysis.get("farmland_physiology", ""),
-        "farmer_narrative": ai_analysis.get("farmer_narrative", {}),
         "historical_context": ai_analysis.get("historical_context", {})
     }
     
