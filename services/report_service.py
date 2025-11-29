@@ -235,6 +235,7 @@ def build_report_structure(
     if not ai_analysis:
         ai_analysis = {
             "executive_verdict": "Pending",
+            "final_field_verdict": "Analysis pending...",
             "executive_summary": {
                 "crop_status": "Pending",
                 "field_condition": "Pending",
@@ -283,6 +284,7 @@ def build_report_structure(
         "growth_stage": growth_data,
         "vegetation_indices": indices_data,
         "executive_verdict": ai_analysis.get("executive_verdict", "Pending"),
+        "final_field_verdict": ai_analysis.get("final_field_verdict", ""),
         "executive_summary": ai_analysis.get("executive_summary", {}),
         "cross_index_synthesis": ai_analysis.get("cross_index_synthesis", ""),
         "physiological_narrative": ai_analysis.get("physiological_narrative", ""),
