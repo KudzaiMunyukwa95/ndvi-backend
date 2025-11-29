@@ -214,9 +214,13 @@ def generate_pdf_report(report_data):
         if is_harvested:
             stage_display = "Harvested"
         
+        # Fix for text cutoff: Wrap description in Paragraph
+        description_text = growth_stage.get('stage_description', 'N/A')
+        description_paragraph = Paragraph(description_text, styles['ReportBodyText'])
+
         status_data = [
             ["Growth Stage:", stage_display],
-            ["Description:", growth_stage.get('stage_description', 'N/A')],
+            ["Description:", description_paragraph],
             ["Days Since Planting:", str(growth_stage.get('days_since_planting', 'N/A'))]
         ]
         
@@ -230,6 +234,7 @@ def generate_pdf_report(report_data):
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('GRID', (0, 0), (-1, -1), 1, colors.white),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'), # Align top for wrapped text
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('TOPPADDING', (0, 0), (-1, -1), 6),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -271,6 +276,13 @@ def generate_pdf_report(report_data):
         story.append(verdict_table)
         story.append(Spacer(1, 8))
         story.append(Paragraph(exec_summary.get("one_line_summary", "Analysis pending..."), styles['ReportBodyText']))
+        
+        # === FINAL FIELD VERDICT (Signature Closing Statement) ===
+        final_verdict = report_data.get("final_field_verdict", "")
+        if final_verdict:
+            story.append(Spacer(1, 10))
+            # Create a distinct box or style for the final verdict
+            story.append(Paragraph(f"<b>FINAL VERDICT:</b> {final_verdict}", styles['ReportBodyText']))
         
         story.append(PageBreak())
 
