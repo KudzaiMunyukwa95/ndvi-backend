@@ -33,7 +33,6 @@ from middleware.auth import require_auth, log_authentication_status
 from services.report_service import analyze_growth_stage, build_report_structure, validate_indices
 from services.openai_client import generate_ai_analysis
 from services.pdf_service import generate_pdf_report
-from core.sentinel1_core import get_radar_visualization_url # NEW: Sentinel-1 Radar Support
 import base64
 
 # Configure real-time logging for Gunicorn multi-worker setup
@@ -1661,7 +1660,7 @@ def generate_ndvi():
             return jsonify({"success": False, "error": "Missing input fields"}), 400
         
         # Validate index type
-        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB", "RADAR"]
+        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
         if index_type not in valid_indices:
             return jsonify({
                 "success": False,
@@ -1697,32 +1696,7 @@ def generate_ndvi():
         geometry_start_time = time.perf_counter()
         polygon = ee.Geometry.Polygon(coords)
         geometry_elapsed = time.perf_counter() - geometry_start_time
-        # [TIMING] Geometry creation: {geometry_elapsed:.3f}s
         logger.info(f"[TIMING] Geometry creation: {geometry_elapsed:.3f}s")
-        
-        # [NEW] RADAR LOGIC
-        if index_type == "RADAR":
-            logger.info("Processing RADAR request")
-            tile_url, size = get_radar_visualization_url(polygon, start, end)
-            
-            if not tile_url:
-                return jsonify({
-                    "success": False,
-                    "error": "No Sentinel-1 Radar imagery found",
-                    "index": "RADAR"
-                }), 404
-                
-            return jsonify({
-                "success": True,
-                "index": "RADAR",
-                "tile_url": tile_url,
-                "palette": ["#000000", "#FFFFFF"],
-                "range": [-25, 0],
-                "explanation": "Sentinel-1 Radar Structure Scan (False Color: Red=Urban/Rough, Green=Biomass, Blue=Smooth/Water)",
-                "collection_size": size,
-                "cloud_cover": 0, # Radar sees through clouds
-                "image_date": end # Approximate
-            })
 
         # [TIMING] Get optimized collection with new cloud cover calculation
         collection_start_time = time.perf_counter()
