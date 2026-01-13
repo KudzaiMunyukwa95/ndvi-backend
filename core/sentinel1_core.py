@@ -57,18 +57,21 @@ def calculate_radar_visualization(image):
     - Red/Pink = Urban or Bare Tilled Soil
     - Blue/Black = Water
     """
-    # Select bands (Decibels)
-    vv = image.select('VV')
-    vh = image.select('VH')
+    # Convert Linear to Decibels (dB)
+    # 10 * log10(x)
+    # Clamp to avoid -Infinity at 0
+    image_db = image.clamp(0.0005, 100).log10().multiply(10.0)
+    
+    # Select bands (Now in Decibels)
+    vv = image_db.select('VV')
+    vh = image_db.select('VH')
     
     # Create the Ratio Band (VV / VH)
-    # Note: In dB, division is subtraction
+    # Ratio in dB = VV_dB - VH_dB (Log rules)
     ratio = vv.subtract(vh).rename('Ratio')
     
     # Create Composite
-    # Range is roughly [-20, 0] for VV/VH in dB
-    # We clamp and normalize for visualization
-    return image.addBands(ratio).select(['VV', 'VH', 'Ratio'])
+    return image_db.addBands(ratio).select(['VV', 'VH', 'Ratio'])
 
 def get_radar_visualization_url(geometry, start_date, end_date):
     """
