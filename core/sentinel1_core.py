@@ -11,7 +11,7 @@ S1_COLLECTION = "COPERNICUS/S1_GRD"
 
 logger = logging.getLogger(__name__)
 
-def get_s1_collection(geometry, start_date, end_date, orbit_pass="DESCENDING"):
+def get_s1_collection(geometry, start_date, end_date, orbit_pass=None):
     """
     Fetch filtered Sentinel-1 collection for visualization.
     
@@ -19,7 +19,7 @@ def get_s1_collection(geometry, start_date, end_date, orbit_pass="DESCENDING"):
         geometry: ee.Geometry polygon
         start_date: string 'YYYY-MM-DD'
         end_date: string 'YYYY-MM-DD'
-        orbit_pass: 'ASCENDING' or 'DESCENDING' (default DESCENDING for morning pass)
+        orbit_pass: 'ASCENDING' or 'DESCENDING' (Optional, default None = Any)
         
     Returns:
         ee.ImageCollection
@@ -33,7 +33,7 @@ def get_s1_collection(geometry, start_date, end_date, orbit_pass="DESCENDING"):
             .filterBounds(geometry) \
             .filterDate(start_date, end_date)
             
-        # Filter by orbit pass if specified (helps consistency)
+        # Filter by orbit pass if specified
         if orbit_pass:
             s1 = s1.filter(ee.Filter.eq('orbitProperties_pass', orbit_pass))
             
