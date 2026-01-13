@@ -1788,6 +1788,14 @@ def generate_ndvi():
             
             # Prepare response with updated configuration
             config = INDEX_CONFIGS[index_type]
+            
+            # Debug: Log the map_id structure
+            logger.info(f"[DEBUG] map_id keys: {map_id.keys()}")
+            logger.info(f"[DEBUG] map_id type: {type(map_id)}")
+            if "tile_fetcher" in map_id:
+                logger.info(f"[DEBUG] tile_fetcher type: {type(map_id['tile_fetcher'])}")
+                logger.info(f"[DEBUG] tile_fetcher url_format: {map_id['tile_fetcher'].url_format}")
+            
             response = {
                 "success": True,
                 "index": index_type,
