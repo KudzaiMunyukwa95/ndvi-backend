@@ -91,13 +91,18 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         
         # Visualization Parameters (Min/Max in dB)
         vis_params = {
+            'bands': ['VV', 'VH', 'Ratio'],
             'min': [-20, -25, 1],   # VV, VH, Ratio
             'max': [0, -5, 15],     # VV, VH, Ratio
             'gamma': 1.6            # Gamma correction for contrast
         }
         
+        # Explicitly visualize to creating 8-bit RGB image
+        # This fixes transparency issues by forcing server-side rendering
+        rgb_image = vis_image.visualize(**vis_params)
+        
         # Get MapID/TileURL
-        map_id_dict = vis_image.getMapId(vis_params)
+        map_id_dict = rgb_image.getMapId()
         tile_url = map_id_dict['tile_fetcher'].url_format
         
         return tile_url, collection.size().getInfo()
