@@ -1661,7 +1661,7 @@ def generate_ndvi():
             return jsonify({"success": False, "error": "Missing input fields"}), 400
         
         # Validate index type
-        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB", "RADAR"]
         if index_type not in valid_indices:
             return jsonify({
                 "success": False,
