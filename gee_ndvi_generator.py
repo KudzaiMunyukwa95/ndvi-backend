@@ -1791,15 +1791,23 @@ def generate_ndvi():
             
             # Debug: Log the map_id structure
             logger.info(f"[DEBUG] map_id keys: {map_id.keys()}")
-            logger.info(f"[DEBUG] map_id type: {type(map_id)}")
-            if "tile_fetcher" in map_id:
-                logger.info(f"[DEBUG] tile_fetcher type: {type(map_id['tile_fetcher'])}")
-                logger.info(f"[DEBUG] tile_fetcher url_format: {map_id['tile_fetcher'].url_format}")
+            logger.info(f"[DEBUG] mapid: {map_id.get('mapid')}")
+            logger.info(f"[DEBUG] token: {map_id.get('token')}")
+            
+            # Construct the actual tile URL (GEE API changed to return template)
+            # Old format: map_id["tile_fetcher"].url_format was a complete URL
+            # New format: It's a template that needs mapid and token
+            base_url = "https://earthengine.googleapis.com/v1alpha"
+            mapid = map_id.get('mapid')
+            token = map_id.get('token')
+            tile_url = f"{base_url}/projects/earthengine-legacy/maps/{mapid}-{token}/tiles/{{z}}/{{x}}/{{y}}"
+            
+            logger.info(f"[DEBUG] Constructed tile_url: {tile_url}")
             
             response = {
                 "success": True,
                 "index": index_type,
-                "tile_url": map_id["tile_fetcher"].url_format,
+                "tile_url": tile_url,
                 "palette": config["palette"],
                 "range": config["range"],
                 "explanation": config["explanation"],
