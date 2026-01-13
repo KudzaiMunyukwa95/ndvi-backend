@@ -35,6 +35,7 @@ from services.openai_client import generate_ai_analysis
 from services.pdf_service import generate_pdf_report
 import base64
 
+
 # Configure real-time logging for Gunicorn multi-worker setup
 logging.basicConfig(
     level=logging.INFO,
@@ -1696,7 +1697,10 @@ def generate_ndvi():
         geometry_start_time = time.perf_counter()
         polygon = ee.Geometry.Polygon(coords)
         geometry_elapsed = time.perf_counter() - geometry_start_time
+        
+        # [TIMING] Geometry creation: {geometry_elapsed:.3f}s
         logger.info(f"[TIMING] Geometry creation: {geometry_elapsed:.3f}s")
+
 
         # [TIMING] Get optimized collection with new cloud cover calculation
         collection_start_time = time.perf_counter()
