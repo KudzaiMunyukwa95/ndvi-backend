@@ -119,11 +119,45 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         
         logger.info(f"[RADAR] Multi-band RGB: Blue=Water, Brown=Soil, Green=Vegetation")
         
-        # Skip RVI metrics for performance
-        mean_rvi = None
-        min_rvi = None
-        max_rvi = None
-        health_score = None
+        # CALCULATE RVI METRICS FOR AI REPORTS (Fast sampling method)
+        try:
+            # Calculate RVI: (4 * VH) / (VV + VH)
+            rvi = vh.multiply(4).divide(vv.add(vh)).rename('RVI')
+            
+            # Fast sampling: Use 50 random points instead of full reduceRegion
+            # This avoids timeout while providing accurate statistics
+            sample_points = ee.FeatureCollection.randomPoints(geometry, 50, seed=42)
+            
+            # Sample RVI values at these points
+            rvi_samples = rvi.sampleRegions(
+                collection=sample_points,
+                scale=10,
+                geometries=False
+            )
+            
+            # Calculate statistics from samples
+            rvi_stats = rvi_samples.aggregate_stats('RVI').getInfo()
+            
+            mean_rvi = rvi_stats.get('mean')
+            min_rvi = rvi_stats.get('min')
+            max_rvi = rvi_stats.get('max')
+            
+            # Convert RVI to Health Score (0-100) for insurance
+            if mean_rvi is not None:
+                rvi_clamped = max(0.2, min(0.8, mean_rvi))
+                health_score = ((rvi_clamped - 0.2) / 0.6) * 100
+                health_score = round(health_score, 1)
+            else:
+                health_score = None
+            
+            logger.info(f"[RADAR METRICS] Mean RVI: {mean_rvi:.3f}, Health Score: {health_score}/100")
+            
+        except Exception as e:
+            logger.warning(f"[RADAR] Could not calculate RVI metrics: {e}")
+            mean_rvi = None
+            min_rvi = None
+            max_rvi = None
+            health_score = None
         
         # Extract Sentinel-1 metadata from first image
         first_image = ee.Image(collection.first())
