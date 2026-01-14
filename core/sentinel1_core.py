@@ -141,6 +141,33 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         logger.info(f"[RADAR] Using multi-band RGB composite (VV=Red, VH=Green, Ratio=Blue)")
         logger.info(f"[RADAR] Interpretation: Brown=Bare Soil, Green=Vegetation, Blue=Water, Yellow=Mixed")
         
+        # CALCULATE RVI METRICS FOR INSURANCE DECISIONS
+        # Extract mean RVI value from the field geometry
+        rvi_stats = rvi.reduceRegion(
+            reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
+            geometry=geometry,
+            scale=10,
+            maxPixels=1e9
+        ).getInfo()
+        
+        mean_rvi = rvi_stats.get('RVI_mean', 0)
+        min_rvi = rvi_stats.get('RVI_min', 0)
+        max_rvi = rvi_stats.get('RVI_max', 0)
+        
+        # Convert RVI to Health Score (0-100)
+        # RVI range: 0.2 (bare soil) to 0.8 (dense crops)
+        # Health Score: 0 (critical) to 100 (excellent)
+        if mean_rvi is not None:
+            # Clamp RVI to expected range
+            rvi_clamped = max(0.2, min(0.8, mean_rvi))
+            # Linear mapping: 0.2 -> 0, 0.8 -> 100
+            health_score = ((rvi_clamped - 0.2) / 0.6) * 100
+            health_score = round(health_score, 1)
+        else:
+            health_score = None
+        
+        logger.info(f"[RADAR METRICS] Mean RVI: {mean_rvi:.3f}, Health Score: {health_score}/100")
+        
         # Extract Sentinel-1 metadata from first image
         first_image = ee.Image(collection.first())
         satellite_name = first_image.get("platform_number").getInfo()  # "A" or "B"
@@ -160,7 +187,7 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         
         logger.info(f"[RADAR] Generated multi-band RGB tile URL: {tile_url}")
         
-        # Create metadata dictionary
+        # Create metadata dictionary with RVI metrics
         metadata = {
             "name": f"Sentinel-1{satellite_name}",
             "sensor": "C-SAR",
@@ -170,12 +197,20 @@ def get_radar_visualization_url(geometry, start_date, end_date):
             "acquisition_time": acquisition_time,
             "resolution": "10m",
             "platform": "Copernicus Sentinel-1",
-            "processing": "RVI with Lee Sigma filtering"
+            "processing": "Multi-band RGB with RVI metrics"
         }
         
-        return tile_url, collection.size().getInfo(), metadata
+        # Create RVI metrics dictionary for insurance decisions
+        rvi_metrics = {
+            "mean_rvi": round(mean_rvi, 3) if mean_rvi is not None else None,
+            "min_rvi": round(min_rvi, 3) if min_rvi is not None else None,
+            "max_rvi": round(max_rvi, 3) if max_rvi is not None else None,
+            "health_score": health_score
+        }
+        
+        return tile_url, collection.size().getInfo(), metadata, rvi_metrics
         
     except Exception as e:
         logger.error(f"Error generating Radar URL: {e}")
-        return None, 0, None
+        return None, 0, None, None
 
