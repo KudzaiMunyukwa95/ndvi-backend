@@ -108,8 +108,11 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         rvi = vh.multiply(4).divide(vv.add(vh)).rename('RVI')
         
         # Normalize RVI to 0-1 range for visualization
-        # Typical agricultural range: 0.2 (bare soil) to 0.8 (dense crops)
-        rvi_normalized = rvi.unitScale(0.15, 0.85)
+        # EXPANDED RANGE for better contrast:
+        # 0.05-0.30: Bare soil/water (brown)
+        # 0.30-0.60: Sparse to moderate vegetation (yellow-green)
+        # 0.60-0.95: Dense crops (green)
+        rvi_normalized = rvi.unitScale(0.05, 0.95)
         
         # AGRICULTURAL COLOR PALETTE
         # Brown (bare soil) → Yellow (sparse vegetation) → Light Green → Dark Green (dense crops)
