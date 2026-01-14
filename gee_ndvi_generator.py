@@ -2334,32 +2334,75 @@ def advanced_report():
         
         logger.info(f"Using satellite image observation date: {image_date}")
         
-        # Calculate all indices for latest image
-        indices = {}
-        for idx in ["NDVI", "EVI", "SAVI", "NDMI", "NDWI"]:
-             img = get_index(latest_image, idx)
-             val = img.reduceRegion(
-                 reducer=ee.Reducer.mean(),
-                 geometry=polygon,
-                 scale=20,
-                 maxPixels=1e9
-             ).get(idx).getInfo()
-             indices[idx] = val
-
-        # Calculate NDVI time series for growth analysis
-        # Map over collection to get NDVI and Date
-        def get_ndvi_date(img):
-             ndvi = get_index(img, "NDVI")
-             val = ndvi.reduceRegion(
-                 reducer=ee.Reducer.mean(),
-                 geometry=polygon,
-                 scale=20,
-                 maxPixels=1e9
-             ).get("NDVI")
-             return ee.Feature(None, {"ndvi": val, "date": img.date().format("YYYY-MM-dd")})
+        # AUTO-SWITCH TO RADAR IF CLOUD COVER TOO HIGH
+        CLOUD_THRESHOLD = 70  # Switch to RADAR above 70% cloud cover
+        use_radar = avg_cloud > CLOUD_THRESHOLD
         
-        ts_features = collection.map(get_ndvi_date).getInfo()
-        ndvi_series = [{"date": f["properties"]["date"], "ndvi": f["properties"]["ndvi"]} for f in ts_features["features"] if f["properties"]["ndvi"] is not None]
+        if use_radar:
+            logger.info(f"[AUTO-RADAR] Cloud cover {avg_cloud:.1f}% exceeds threshold {CLOUD_THRESHOLD}%. Switching to RADAR.")
+            
+            # Fetch RADAR data instead of optical
+            try:
+                from core.sentinel1_core import get_radar_visualization_url
+                
+                radar_result = get_radar_visualization_url(polygon, start_date, end_date)
+                
+                if radar_result and radar_result[0]:  # tile_url exists
+                    tile_url, rvi_metrics, metadata = radar_result
+                    
+                    # Use RADAR indices
+                    indices = {
+                        "data_source": "sentinel1_radar",
+                        "mean": rvi_metrics.get("mean_rvi"),
+                        "min": rvi_metrics.get("min_rvi"),
+                        "max": rvi_metrics.get("max_rvi"),
+                        "health_score": rvi_metrics.get("health_score"),
+                        "cloud_cover": 0  # RADAR penetrates clouds
+                    }
+                    
+                    # No time series for RADAR (yet)
+                    ndvi_series = []
+                    
+                    logger.info(f"[AUTO-RADAR] Successfully fetched RADAR data: RVI={indices['mean']:.3f}")
+                else:
+                    logger.warning("[AUTO-RADAR] RADAR fetch failed, falling back to optical despite clouds")
+                    use_radar = False
+                    
+            except Exception as e:
+                logger.error(f"[AUTO-RADAR] Error fetching RADAR: {e}")
+                use_radar = False
+        
+        # OPTICAL MODE (default or fallback)
+        if not use_radar:
+            # Calculate all indices for latest image
+            indices = {}
+            for idx in ["NDVI", "EVI", "SAVI", "NDMI", "NDWI"]:
+                 img = get_index(latest_image, idx)
+                 val = img.reduceRegion(
+                     reducer=ee.Reducer.mean(),
+                     geometry=polygon,
+                     scale=20,
+                     maxPixels=1e9
+                 ).get(idx).getInfo()
+                 indices[idx] = val
+
+            # Calculate NDVI time series for growth analysis
+            # Map over collection to get NDVI and Date
+            def get_ndvi_date(img):
+                 ndvi = get_index(img, "NDVI")
+                 val = ndvi.reduceRegion(
+                     reducer=ee.Reducer.mean(),
+                     geometry=polygon,
+                     scale=20,
+                     maxPixels=1e9
+                 ).get("NDVI")
+                 return ee.Feature(None, {"ndvi": val, "date": img.date().format("YYYY-MM-dd")})
+            
+            ts_features = collection.map(get_ndvi_date).getInfo()
+            ndvi_series = [{"date": f["properties"]["date"], "ndvi": f["properties"]["ndvi"]} for f in ts_features["features"] if f["properties"]["ndvi"] is not None]
+            
+            # Add cloud cover to indices
+            indices["cloud_cover"] = avg_cloud
         
         # 3. Analyze Growth Stage using ACTUAL IMAGE DATE (not end_date)
         growth_data = analyze_growth_stage(crop, planting_date, image_date)
@@ -2381,8 +2424,10 @@ def advanced_report():
             "satellite_observation_date": image_date,
             "date_range_start": start_date,
             "date_range_end": end_date,
-            "data_source": "Sentinel-2 L2A",
-            "number_of_observations": len(ndvi_series)
+            "data_source": "Sentinel-1 (SAR)" if use_radar else "Sentinel-2 L2A",
+            "number_of_observations": len(ndvi_series),
+            "cloud_cover_percent": 0 if use_radar else avg_cloud,
+            "auto_switched_to_radar": use_radar
         }
         
         # Structure for AI
