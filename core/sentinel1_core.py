@@ -88,29 +88,30 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Mosaic logic: Reduce to a single image (median to remove speckle)
         mosaic = collection.median().clip(geometry)
         
-        # Simple speckle filtering (single pass for speed)
-        mosaic = mosaic.focalMedian(radius=1.5, kernelType='square', units='pixels')
+        # Single-pass speckle filtering (fast but effective)
+        filtered = mosaic.focalMedian(radius=1.5, kernelType='square', units='pixels')
         
         # Extract polarizations
-        vv = mosaic.select('VV')
-        vh = mosaic.select('VH')
+        vv = filtered.select('VV')
+        vh = filtered.select('VH')
         
-        # Calculate VV/VH ratio (vegetation indicator)
-        ratio = vv.subtract(vh).rename('ratio')
+        # Calculate VV/VH ratio for water/soil/vegetation distinction
+        ratio = vv.divide(vh).rename('ratio')
         
-        # Simple normalization for speed
-        vv_norm = vv.unitScale(-17, -5)
-        vh_norm = vh.unitScale(-26, -13)
-        ratio_norm = ratio.unitScale(3, 12)
+        # OPTIMIZED MULTI-BAND RGB FOR CLEAR DISTINCTION
+        # Normalize each band (simplified ranges for speed)
+        vv_norm = vv.unitScale(-20, -5).multiply(255)
+        vh_norm = vh.unitScale(-28, -12).multiply(255)
+        ratio_norm = ratio.unitScale(0.3, 3).multiply(255)
         
-        # Simple RGB composite (fast)
+        # Create RGB composite: Red=VV (soil), Green=VH (vegetation), Blue=Ratio (water)
         rgb_image = ee.Image.rgb(
-            vv_norm.multiply(180),
-            ratio_norm.multiply(255),
-            vv_norm.multiply(255).subtract(vh_norm.multiply(200))
+            vv_norm,      # Red: Bare soil shows brown/red
+            vh_norm,      # Green: Vegetation shows green
+            ratio_norm    # Blue: Water shows blue
         ).byte()
         
-        logger.info(f"[RADAR] Using simple RGB composite for speed")
+        logger.info(f"[RADAR] Using optimized multi-band RGB (Blue=Water, Brown=Soil, Green=Vegetation)")
         
         # Skip RVI metrics for performance
         mean_rvi = None
