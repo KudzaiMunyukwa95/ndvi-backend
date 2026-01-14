@@ -220,8 +220,14 @@ def generate_ai_analysis(report_context):
     """
     try:
         # Detect if RADAR data is being used
-        data_source = report_context.get("vegetation_indices", {}).get("data_source", "optical")
+        vegetation_indices = report_context.get("vegetation_indices", {})
+        data_source = vegetation_indices.get("data_source", "optical")
         use_radar_prompt = data_source == "radar"
+        
+        # DEBUG: Log what we're detecting
+        logger.info(f"[AI DEBUG] vegetation_indices keys: {list(vegetation_indices.keys())}")
+        logger.info(f"[AI DEBUG] data_source value: '{data_source}'")
+        logger.info(f"[AI DEBUG] use_radar_prompt: {use_radar_prompt}")
         
         # Select appropriate system prompt
         system_prompt = RADAR_SYSTEM_PROMPT if use_radar_prompt else SYSTEM_PROMPT
