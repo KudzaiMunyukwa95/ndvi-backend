@@ -98,26 +98,31 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Calculate VV/VH ratio for water/soil/vegetation distinction
         ratio = vv.divide(vh).rename('ratio')
         
-        # ORIGINAL WORKING RGB - MINIMAL FINE-TUNING
-        # This was the version that worked well, just slight adjustments
+        # PROPER RVI VISUALIZATION - SCIENTIFIC APPROACH
+        # RVI = (4 * VH) / (VV + VH) - Industry standard for SAR agriculture
         
-        # VV (Red): Soil - standard range
-        vv_norm = vv.unitScale(-20, -5).multiply(255)
+        # Calculate Radar Vegetation Index
+        rvi = vh.multiply(4).divide(vv.add(vh)).rename('RVI')
         
-        # VH (Green): Vegetation - standard range (prevents green on bare soil)
-        vh_norm = vh.unitScale(-28, -12).multiply(255)
+        # Professional 6-color agricultural palette
+        # Brown (bare soil) → Yellow (sparse) → Light Green → Dark Green (dense crops)
+        agricultural_palette = [
+            '8B4513',  # Saddle Brown - Bare soil/fallow (RVI ~0.2)
+            'CD853F',  # Peru - Very sparse vegetation (RVI ~0.3)
+            'F0E68C',  # Khaki - Sparse vegetation (RVI ~0.4)
+            'ADFF2F',  # Green Yellow - Moderate vegetation (RVI ~0.5)
+            '32CD32',  # Lime Green - Good vegetation (RVI ~0.6)
+            '228B22'   # Forest Green - Dense crops (RVI ~0.7+)
+        ]
         
-        # Ratio (Blue): Water - slightly boosted for vivid blue
-        ratio_norm = ratio.unitScale(0.3, 3).multiply(280).clamp(0, 255)
+        # Visualize RVI with agricultural palette
+        rgb_image = rvi.visualize(
+            min=0.2,  # Bare soil
+            max=0.8,  # Dense crops
+            palette=agricultural_palette
+        )
         
-        # Original RGB composite that worked
-        rgb_image = ee.Image.rgb(
-            vv_norm,      # Red: Bare soil (brown)
-            vh_norm,      # Green: Vegetation only
-            ratio_norm    # Blue: Water (slightly enhanced)
-        ).byte()
-        
-        logger.info(f"[RADAR] Original RGB with enhanced blue water")
+        logger.info(f"[RADAR] Using RVI with agricultural palette (Brown→Green)")
         
         # Skip RVI metrics for performance
         mean_rvi = None
