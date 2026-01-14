@@ -1714,7 +1714,7 @@ def generate_ndvi():
                     "index": "RADAR"
                 }), 404
             
-            tile_url, size, metadata = result
+            tile_url, size, metadata, rvi_metrics = result
                 
             return jsonify({
                 "success": True,
@@ -1724,10 +1724,11 @@ def generate_ndvi():
                 "collection_size": size,
                 "cloud_cover": 0,  # Radar penetrates clouds
                 "image_date": end,
-                # No mean/min/max for RADAR (it's a false-color composite, not a single-band index)
-                "mean": None,
-                "min": None,
-                "max": None,
+                # RVI metrics for insurance decisions
+                "mean": rvi_metrics.get("mean_rvi"),
+                "min": rvi_metrics.get("min_rvi"),
+                "max": rvi_metrics.get("max_rvi"),
+                "health_score": rvi_metrics.get("health_score"),
                 # Satellite metadata for professional display
                 "satellite": metadata
             })
