@@ -98,29 +98,27 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Calculate VV/VH ratio for water/soil/vegetation distinction
         ratio = vv.divide(vh).rename('ratio')
         
-        # FINE-TUNED MULTI-BAND RGB FOR BETTER CROP DENSITY SEPARATION
-        # Adjusted ranges to enhance contrast between dense crops and bare soil
+        # PROFESSIONAL-GRADE RGB WITH VIBRANT COLORS
+        # Designed for insurance underwriters - clear visual distinction
         
-        # VV (Red channel): Soil moisture/roughness
-        # Reduced intensity to prevent soil from dominating
-        vv_norm = vv.unitScale(-20, -5).multiply(200)  # Reduced from 255
+        # VV (Red channel): Soil - MUTED to reduce dominance
+        vv_norm = vv.unitScale(-20, -5).multiply(150)  # Heavily reduced
         
-        # VH (Green channel): Vegetation volume scattering
-        # Enhanced to make crops more prominent
-        vh_norm = vh.unitScale(-28, -11).multiply(255)
+        # VH (Green channel): Vegetation - BRIGHT GREEN for crops
+        vh_norm = vh.unitScale(-28, -10).multiply(300).clamp(0, 255)  # Boosted!
         
-        # Ratio (Blue channel): Water/smooth surface indicator
-        ratio_norm = ratio.unitScale(0.3, 3).multiply(255)
+        # Ratio (Blue channel): Water - VIVID BLUE
+        ratio_norm = ratio.unitScale(0.2, 3.5).multiply(320).clamp(0, 255)  # Boosted!
         
-        # Create balanced RGB composite
-        # Vegetation (green) now more prominent than soil (red)
+        # Create PROFESSIONAL RGB composite
+        # Green vegetation POPS, Blue water is VIVID, Brown soil is subtle
         rgb_image = ee.Image.rgb(
-            vv_norm,                    # Red: Bare soil (reduced intensity)
-            vh_norm.pow(0.85),          # Green: Vegetation (enhanced)
-            ratio_norm                  # Blue: Water
+            vv_norm,                    # Red: Soil (muted brown)
+            vh_norm.pow(0.75),          # Green: BRIGHT vegetation
+            ratio_norm                  # Blue: VIVID water
         ).byte()
         
-        logger.info(f"[RADAR] Using balanced RGB (Green vegetation more prominent)")
+        logger.info(f"[RADAR] Professional RGB: BRIGHT GREEN crops, VIVID BLUE water")
         
         # Skip RVI metrics for performance
         mean_rvi = None
