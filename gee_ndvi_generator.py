@@ -1762,8 +1762,9 @@ def generate_ndvi():
         if index_type == "RGB":
             # RGB visualization
             rgb = image.select(["B4", "B3", "B2"])
-            # Apply performance optimization with reproject
-            vis_image = rgb.visualize(min=0, max=3000).reproject(crs='EPSG:4326', scale=30)
+            # Apply bicubic resampling for smoother visualization
+            # Removed reproject(scale=30) which was causing blocky pixels
+            vis_image = rgb.resample('bicubic').visualize(min=0, max=3000)
             
             # No stats for RGB
             stats_dict = {}
