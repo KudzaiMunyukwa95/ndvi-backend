@@ -176,7 +176,8 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         
         # Get MapID using new GEE API format
         # Apply bicubic resampling for smoother visualization
-        map_id = rgb_image.resample('bicubic').getMapId()
+        # Must REPROJECT to 10m first because mosaic has default 1-degree projection
+        map_id = rgb_image.reproject(crs='EPSG:4326', scale=10).resample('bicubic').getMapId()
         
         # Construct tile URL (FIXED METHOD - same as optical imagery)
         base_url = "https://earthengine.googleapis.com/v1alpha"
