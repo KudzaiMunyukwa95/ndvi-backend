@@ -1781,8 +1781,9 @@ def generate_ndvi():
                 "palette": config["palette"]
             }
             
-            # Apply performance optimization with reproject
-            vis_image = index_image.visualize(**vis_params).reproject(crs='EPSG:4326', scale=10)
+            # Apply bicubic resampling for smoother visualization (removes 10m pixelation blocks)
+            # We DO NOT reproject here, allowing GEE to smooth at screen resolution
+            vis_image = index_image.resample('bicubic').visualize(**vis_params)
             
             # [TIMING] Calculate statistics
             stats_start_time = time.perf_counter()
