@@ -1720,7 +1720,7 @@ def generate_ndvi():
                 "success": True,
                 "index": "RADAR",
                 "tile_url": tile_url,
-                "explanation": "Sentinel-1 RADAR Vegetation Index (RVI) - Cloud Penetrating | Brown=Bare Soil, Yellow=Sparse Vegetation, Green=Dense Crops",
+                "explanation": "Sentinel-1 RADAR Multi-Band Composite - Cloud Penetrating | Brown=Bare Soil, Green=Vegetation, Blue=Water, Yellow=Mixed",
                 "collection_size": size,
                 "cloud_cover": 0,  # Radar penetrates clouds
                 "image_date": end,
