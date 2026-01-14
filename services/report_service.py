@@ -205,38 +205,40 @@ def validate_indices(indices):
         return validated
     
     # OPTICAL mode: Validate standard indices
-    # EVI sanity check [-1, 1]
+    # Clamp all indices to [0, 1] range for simpler client reporting
+    
+    # EVI sanity check [0, 1]
     evi = indices.get("EVI")
     if evi is not None:
-        validated["evi"] = max(-1.0, min(1.0, evi))
+        validated["evi"] = max(0.0, min(1.0, evi))
     else:
         validated["evi"] = None
 
-    # NDVI
+    # NDVI [0, 1]
     ndvi = indices.get("NDVI")
     if ndvi is not None:
-        validated["ndvi"] = max(-1.0, min(1.0, ndvi))
+        validated["ndvi"] = max(0.0, min(1.0, ndvi))
     else:
         validated["ndvi"] = None
 
-    # SAVI
+    # SAVI [0, 1]
     savi = indices.get("SAVI")
     if savi is not None:
-        validated["savi"] = max(-1.0, min(1.0, savi))
+        validated["savi"] = max(0.0, min(1.0, savi))
     else:
         validated["savi"] = None
         
-    # NDMI
+    # NDMI [0, 1]
     ndmi = indices.get("NDMI")
     if ndmi is not None:
-        validated["ndmi"] = max(-1.0, min(1.0, ndmi))
+        validated["ndmi"] = max(0.0, min(1.0, ndmi))
     else:
         validated["ndmi"] = None
         
-    # NDWI
+    # NDWI [0, 1]
     ndwi = indices.get("NDWI")
     if ndwi is not None:
-        validated["ndwi"] = max(-1.0, min(1.0, ndwi))
+        validated["ndwi"] = max(0.0, min(1.0, ndwi))
     else:
         validated["ndwi"] = None
     
