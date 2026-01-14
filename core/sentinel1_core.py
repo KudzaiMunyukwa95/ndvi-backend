@@ -100,9 +100,11 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Bare Soil: Brown/tan (medium VV, low VH, low ratio)
         # Vegetation: Green (medium VV, higher VH, high ratio)
         
-        # Adjusted normalization ranges based on typical backscatter values
-        vv_norm = vv.unitScale(-25, -5)      # VV range
-        vh_norm = vh.unitScale(-30, -10)     # VH range (vegetation has higher VH)
+        # CORRECTED normalization ranges based on actual data from Lake Chivero area
+        # VV actual range: -16.54 to -5.00 dB
+        # VH actual range: -25.18 to -13.33 dB
+        vv_norm = vv.unitScale(-17, -5)      # VV range (adjusted to actual data)
+        vh_norm = vh.unitScale(-26, -13)     # VH range (adjusted to actual data)
         ratio_norm = ratio.unitScale(3, 12)  # Ratio range (vegetation has high ratio)
         
         # Create RGB composite with adjusted weights
@@ -113,7 +115,7 @@ def get_radar_visualization_url(geometry, start_date, end_date):
             vv_norm.multiply(255).subtract(vh_norm.multiply(200))  # Blue: inverted for water
         ).byte()
         
-        logger.info(f"[RADAR] Using agriculture-focused false-color (Blue=Water, Brown=Soil, Green=Vegetation)")
+        logger.info(f"[RADAR] Using corrected ranges - VV:[-17,-5], VH:[-26,-13]")
         
         # Get MapID using new GEE API format
         map_id = rgb_image.getMapId()
