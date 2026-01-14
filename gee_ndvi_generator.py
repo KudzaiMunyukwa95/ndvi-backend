@@ -1718,12 +1718,14 @@ def generate_ndvi():
                 "success": True,
                 "index": "RADAR",
                 "tile_url": tile_url,
-                "palette": ["#000000", "#FFFFFF"],
-                "range": [-25, 0],
-                "explanation": "Sentinel-1 Radar (VV=Red, VH=Green, Ratio=Blue) - Cloud Penetrating",
+                "explanation": "Sentinel-1 Radar - Cloud Penetrating (Green=Vegetation, Brown=Soil, Blue=Water)",
                 "collection_size": size,
                 "cloud_cover": 0,  # Radar penetrates clouds
-                "image_date": end
+                "image_date": end,
+                # No mean/min/max for RADAR (it's a false-color composite, not a single-band index)
+                "mean": None,
+                "min": None,
+                "max": None
             })
 
 
