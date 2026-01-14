@@ -88,6 +88,10 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Mosaic logic: Reduce to a single image (median to remove speckle)
         mosaic = collection.median().clip(geometry)
         
+        # Apply speckle filtering to reduce pixelation
+        # Focal median filter with 3x3 kernel smooths the imagery
+        mosaic = mosaic.focalMedian(radius=1.5, kernelType='square', units='pixels')
+        
         # Extract polarizations
         vv = mosaic.select('VV')
         vh = mosaic.select('VH')
