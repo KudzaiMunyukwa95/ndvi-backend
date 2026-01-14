@@ -102,27 +102,25 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Adjusted ranges to enhance contrast between dense crops and bare soil
         
         # VV (Red channel): Soil moisture/roughness
-        # Tighter range to make bare soil more distinct
-        vv_norm = vv.unitScale(-18, -6).multiply(255)
+        # Reduced intensity to prevent soil from dominating
+        vv_norm = vv.unitScale(-20, -5).multiply(200)  # Reduced from 255
         
         # VH (Green channel): Vegetation volume scattering
-        # Enhanced sensitivity to show crop density differences
-        # Lower min value to capture sparse vegetation better
-        vh_norm = vh.unitScale(-26, -11).multiply(255)
+        # Enhanced to make crops more prominent
+        vh_norm = vh.unitScale(-28, -11).multiply(255)
         
         # Ratio (Blue channel): Water/smooth surface indicator
-        # Adjusted for clearer water distinction
-        ratio_norm = ratio.unitScale(0.4, 2.8).multiply(255)
+        ratio_norm = ratio.unitScale(0.3, 3).multiply(255)
         
-        # Create RGB composite with enhanced vegetation contrast
-        # Apply slight gamma boost to green channel for crop density
+        # Create balanced RGB composite
+        # Vegetation (green) now more prominent than soil (red)
         rgb_image = ee.Image.rgb(
-            vv_norm,                    # Red: Bare soil (brown/red)
-            vh_norm.pow(0.9),          # Green: Vegetation (enhanced for density)
-            ratio_norm                  # Blue: Water (blue)
+            vv_norm,                    # Red: Bare soil (reduced intensity)
+            vh_norm.pow(0.85),          # Green: Vegetation (enhanced)
+            ratio_norm                  # Blue: Water
         ).byte()
         
-        logger.info(f"[RADAR] Using enhanced multi-band RGB (Better crop density separation)")
+        logger.info(f"[RADAR] Using balanced RGB (Green vegetation more prominent)")
         
         # Skip RVI metrics for performance
         mean_rvi = None
