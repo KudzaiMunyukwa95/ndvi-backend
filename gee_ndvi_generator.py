@@ -1724,6 +1724,7 @@ def generate_ndvi():
                 "collection_size": size,
                 "cloud_cover": 0,  # Radar penetrates clouds
                 "image_date": end,
+                "data_source": "sentinel1_radar",  # For report detection
                 # RVI metrics for insurance decisions
                 "mean": rvi_metrics.get("mean_rvi"),
                 "min": rvi_metrics.get("min_rvi"),
