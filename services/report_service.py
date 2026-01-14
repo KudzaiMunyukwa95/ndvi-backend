@@ -297,4 +297,31 @@ def build_report_structure(
         "historical_context": ai_analysis.get("historical_context", {})
     }
     
+    # Add imagery context (RADAR vs Optical detection)
+    data_source = indices_data.get("data_source", "optical")
+    cloud_cover = indices_data.get("cloud_cover", 0)
+    
+    imagery_context = {
+        "data_source": data_source,
+        "cloud_cover_percent": cloud_cover,
+        "switched_to_radar": data_source == "sentinel1_radar",
+        "explanation": ""
+    }
+    
+    if data_source == "sentinel1_radar":
+        imagery_context["explanation"] = (
+            f"Due to cloud cover preventing optical satellite imagery, "
+            f"analysis switched to Sentinel-1 RADAR (Synthetic Aperture RADAR) which "
+            f"penetrates clouds to provide reliable vegetation assessment. "
+            f"The Radar Vegetation Index (RVI) is used instead of optical NDVI."
+        )
+        imagery_context["satellite_system"] = "Sentinel-1 (SAR)"
+        imagery_context["index_used"] = "RVI (Radar Vegetation Index)"
+    else:
+        imagery_context["explanation"] = f"Optical satellite imagery with {cloud_cover}% cloud cover."
+        imagery_context["satellite_system"] = "Sentinel-2 (Optical)"
+        imagery_context["index_used"] = "NDVI and related optical indices"
+    
+    report["imagery_context"] = imagery_context
+    
     return report
