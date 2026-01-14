@@ -2348,7 +2348,7 @@ def advanced_report():
                 radar_result = get_radar_visualization_url(polygon, start_date, end_date)
                 
                 if radar_result and radar_result[0]:  # tile_url exists
-                    tile_url, rvi_metrics, metadata = radar_result
+                    tile_url, collection_size, metadata, rvi_metrics = radar_result  # FIX: 4 values not 3
                     
                     # Use RADAR indices
                     indices = {
