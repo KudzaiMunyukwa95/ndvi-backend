@@ -1763,8 +1763,8 @@ def generate_ndvi():
             # RGB visualization
             rgb = image.select(["B4", "B3", "B2"])
             # Apply bicubic resampling for smoother visualization
-            # Removed reproject(scale=30) which was causing blocky pixels
-            vis_image = rgb.resample('bicubic').visualize(min=0, max=3000)
+            # Must REPROJECT to 10m first because mosaic has default 1-degree projection
+            vis_image = rgb.reproject(crs='EPSG:4326', scale=10).resample('bicubic').visualize(min=0, max=3000)
             
             # No stats for RGB
             stats_dict = {}
@@ -1782,9 +1782,9 @@ def generate_ndvi():
                 "palette": config["palette"]
             }
             
-            # Apply bicubic resampling for smoother visualization (removes 10m pixelation blocks)
-            # We DO NOT reproject here, allowing GEE to smooth at screen resolution
-            vis_image = index_image.resample('bicubic').visualize(**vis_params)
+            # Apply bicubic resampling for smoother visualization
+            # Must REPROJECT to 10m first because mosaic has default 1-degree projection
+            vis_image = index_image.reproject(crs='EPSG:4326', scale=10).resample('bicubic').visualize(**vis_params)
             
             # [TIMING] Calculate statistics
             stats_start_time = time.perf_counter()
