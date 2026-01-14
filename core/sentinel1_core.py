@@ -88,19 +88,33 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Mosaic logic: Reduce to a single image (median to remove speckle)
         mosaic = collection.median().clip(geometry)
         
-        # Simple VV-only visualization (more reliable than false-color)
+        # Extract polarizations
         vv = mosaic.select('VV')
+        vh = mosaic.select('VH')
         
-        # Convert to power scale for better visualization
-        vv_power = ee.Image(10).pow(vv.divide(10))
+        # Calculate VV/VH ratio (vegetation indicator)
+        # High ratio = vegetation, Low ratio = bare soil/water
+        ratio = vv.subtract(vh).rename('ratio')
         
-        # Stretch to 0-255 for visualization
-        vv_stretched = vv_power.unitScale(0.001, 0.5).multiply(255).byte()
+        # Create intuitive false-color composite:
+        # RED channel: VH (vegetation structure) - shows crop density
+        # GREEN channel: Ratio (vegetation indicator) - highlights healthy crops
+        # BLUE channel: VV (surface roughness) - shows water/smooth surfaces
         
-        # Create RGB by duplicating VV to all channels (grayscale)
-        rgb_image = ee.Image.rgb(vv_stretched, vv_stretched, vv_stretched)
+        # Normalize to 0-1 range for better visualization
+        vh_norm = vh.unitScale(-25, -5)
+        ratio_norm = ratio.unitScale(1, 8)
+        vv_norm = vv.unitScale(-20, 0)
         
-        logger.info(f"[RADAR] Using simplified VV grayscale visualization")
+        # Create RGB composite
+        # This will show: Green = vegetation, Brown = bare soil, Dark blue = water
+        rgb_image = ee.Image.rgb(
+            vh_norm.multiply(255),      # Red: vegetation structure
+            ratio_norm.multiply(255),    # Green: vegetation indicator (main channel)
+            vv_norm.multiply(100)        # Blue: reduced to make vegetation greener
+        ).byte()
+        
+        logger.info(f"[RADAR] Using vegetation-focused false-color (Green=Crops, Brown=Soil, Blue=Water)")
         
         # Get MapID using new GEE API format
         map_id = rgb_image.getMapId()
