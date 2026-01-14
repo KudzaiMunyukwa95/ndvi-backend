@@ -1808,8 +1808,9 @@ def generate_ndvi():
         
         # Extract satellite metadata for professional display
         satellite_name = first_image.get("SPACECRAFT_NAME").getInfo()  # e.g., "Sentinel-2A"
-        sensor_id = first_image.get("SENSOR_ID").getInfo()  # e.g., "MSI"
-        processing_level = first_image.get("PROCESSING_LEVEL").getInfo()  # e.g., "Level-2A"
+        # Sentinel-2 always uses MSI sensor and we're using Level-2A collection
+        sensor_id = "MSI"  # Multispectral Instrument
+        processing_level = "Level-2A"  # Atmospheric correction applied
         
         cloud_calc_elapsed = time.perf_counter() - cloud_calc_start_time
         logger.info(f"[TIMING] Cloud cover calculated: {cloud_calc_elapsed:.3f}s")
