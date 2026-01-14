@@ -175,7 +175,8 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         logger.info(f"[RADAR METADATA] Sentinel-1{satellite_name}, Orbit: {orbit_direction}, Mode: {instrument_mode}")
         
         # Get MapID using new GEE API format
-        map_id = rgb_image.getMapId()
+        # Apply bicubic resampling for smoother visualization
+        map_id = rgb_image.resample('bicubic').getMapId()
         
         # Construct tile URL (FIXED METHOD - same as optical imagery)
         base_url = "https://earthengine.googleapis.com/v1alpha"
