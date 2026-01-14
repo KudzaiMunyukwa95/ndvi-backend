@@ -141,32 +141,17 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         logger.info(f"[RADAR] Using multi-band RGB composite (VV=Red, VH=Green, Ratio=Blue)")
         logger.info(f"[RADAR] Interpretation: Brown=Bare Soil, Green=Vegetation, Blue=Water, Yellow=Mixed")
         
-        # CALCULATE RVI METRICS FOR INSURANCE DECISIONS
-        # Extract mean RVI value from the field geometry
-        rvi_stats = rvi.reduceRegion(
-            reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
-            geometry=geometry,
-            scale=10,
-            maxPixels=1e9
-        ).getInfo()
+        # CALCULATE RVI METRICS FOR INSURANCE DECISIONS (OPTIONAL - can be slow)
+        # Only calculate if explicitly requested to avoid timeout
+        # For now, skip metrics to maintain performance
+        mean_rvi = None
+        min_rvi = None
+        max_rvi = None
+        health_score = None
         
-        mean_rvi = rvi_stats.get('RVI_mean', 0)
-        min_rvi = rvi_stats.get('RVI_min', 0)
-        max_rvi = rvi_stats.get('RVI_max', 0)
-        
-        # Convert RVI to Health Score (0-100)
-        # RVI range: 0.2 (bare soil) to 0.8 (dense crops)
-        # Health Score: 0 (critical) to 100 (excellent)
-        if mean_rvi is not None:
-            # Clamp RVI to expected range
-            rvi_clamped = max(0.2, min(0.8, mean_rvi))
-            # Linear mapping: 0.2 -> 0, 0.8 -> 100
-            health_score = ((rvi_clamped - 0.2) / 0.6) * 100
-            health_score = round(health_score, 1)
-        else:
-            health_score = None
-        
-        logger.info(f"[RADAR METRICS] Mean RVI: {mean_rvi:.3f}, Health Score: {health_score}/100")
+        # TODO: Add separate endpoint for RVI metrics calculation
+        # This should be called separately after imagery loads
+        logger.info(f"[RADAR] Skipping RVI metrics calculation for performance")
         
         # Extract Sentinel-1 metadata from first image
         first_image = ee.Image(collection.first())
