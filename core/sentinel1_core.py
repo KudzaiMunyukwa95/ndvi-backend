@@ -98,27 +98,26 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Calculate VV/VH ratio for water/soil/vegetation distinction
         ratio = vv.divide(vh).rename('ratio')
         
-        # BALANCED PROFESSIONAL VISUALIZATION
-        # Green only for ACTUAL vegetation, brown for bare soil
+        # ORIGINAL WORKING RGB - MINIMAL FINE-TUNING
+        # This was the version that worked well, just slight adjustments
         
-        # VV (Red): Soil - moderate for brown color on bare areas
-        vv_norm = vv.unitScale(-20, -5).multiply(180)
+        # VV (Red): Soil - standard range
+        vv_norm = vv.unitScale(-20, -5).multiply(255)
         
-        # VH (Green): Vegetation - NARROW range so only real crops are green
-        # Low VH (bare soil) = dark/no green, High VH (crops) = bright green
-        vh_norm = vh.unitScale(-25, -12).multiply(350).clamp(0, 255)
+        # VH (Green): Vegetation - standard range (prevents green on bare soil)
+        vh_norm = vh.unitScale(-28, -12).multiply(255)
         
-        # Ratio (Blue): Water - vivid blue
-        ratio_norm = ratio.unitScale(0.2, 3.5).multiply(350).clamp(0, 255)
+        # Ratio (Blue): Water - slightly boosted for vivid blue
+        ratio_norm = ratio.unitScale(0.3, 3).multiply(280).clamp(0, 255)
         
-        # RGB with proper discrimination
+        # Original RGB composite that worked
         rgb_image = ee.Image.rgb(
-            vv_norm,          # Brown soil on bare areas
-            vh_norm,          # Green ONLY on vegetation
-            ratio_norm        # Blue water
+            vv_norm,      # Red: Bare soil (brown)
+            vh_norm,      # Green: Vegetation only
+            ratio_norm    # Blue: Water (slightly enhanced)
         ).byte()
         
-        logger.info(f"[RADAR] Balanced: Green=crops only, Brown=bare soil, Blue=water")
+        logger.info(f"[RADAR] Original RGB with enhanced blue water")
         
         # Skip RVI metrics for performance
         mean_rvi = None
