@@ -128,7 +128,9 @@ def get_radar_visualization_url(geometry, start_date, end_date):
             
             # Calculate RVI: (4 * VH) / (VV + VH)
             # Range: 0 (Bare Soil) to 1 (Dense Vegetation)
-            rvi = vh_lin.multiply(4).divide(vv_lin.add(vh_lin)).rename('RVI')
+            # THEORETICAL NOTE: Formula can >1 for extreme volume scattering.
+            # We CLAMP to 1.0 to ensure standard index behavior for users.
+            rvi = vh_lin.multiply(4).divide(vv_lin.add(vh_lin)).rename('RVI').clamp(0.0, 1.0)
             
             # Fast sampling: Use 50 random points instead of full reduceRegion
             # This avoids timeout while providing accurate statistics
