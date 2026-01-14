@@ -88,22 +88,19 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Mosaic logic: Reduce to a single image (median to remove speckle)
         mosaic = collection.median().clip(geometry)
         
-        # Calculate visualization bands
-        vis_image = calculate_radar_visualization(mosaic)
+        # Simple VV-only visualization (more reliable than false-color)
+        vv = mosaic.select('VV')
         
-        # Visualization Parameters - Adjusted for better visibility
-        # Using linear scale instead of dB for clearer visualization
-        vis_params = {
-            'bands': ['VV', 'VH', 'Ratio'],
-            'min': [-25, -30, 0.5],   # Adjusted for better contrast
-            'max': [0, -5, 2.5],      # Wider range for visibility
-            'gamma': [1.2, 1.2, 1.2]  # Gamma correction for each band
-        }
+        # Convert to power scale for better visualization
+        vv_power = ee.Image(10).pow(vv.divide(10))
         
-        logger.info(f"[RADAR] Applying visualization with params: {vis_params}")
+        # Stretch to 0-255 for visualization
+        vv_stretched = vv_power.unitScale(0.001, 0.5).multiply(255).byte()
         
-        # Explicitly visualize to create 8-bit RGB image
-        rgb_image = vis_image.visualize(**vis_params)
+        # Create RGB by duplicating VV to all channels (grayscale)
+        rgb_image = ee.Image.rgb(vv_stretched, vv_stretched, vv_stretched)
+        
+        logger.info(f"[RADAR] Using simplified VV grayscale visualization")
         
         # Get MapID using new GEE API format
         map_id = rgb_image.getMapId()
