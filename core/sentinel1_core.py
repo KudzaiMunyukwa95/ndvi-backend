@@ -98,20 +98,31 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Calculate VV/VH ratio for water/soil/vegetation distinction
         ratio = vv.divide(vh).rename('ratio')
         
-        # OPTIMIZED MULTI-BAND RGB FOR CLEAR DISTINCTION
-        # Normalize each band (simplified ranges for speed)
-        vv_norm = vv.unitScale(-20, -5).multiply(255)
-        vh_norm = vh.unitScale(-28, -12).multiply(255)
-        ratio_norm = ratio.unitScale(0.3, 3).multiply(255)
+        # FINE-TUNED MULTI-BAND RGB FOR BETTER CROP DENSITY SEPARATION
+        # Adjusted ranges to enhance contrast between dense crops and bare soil
         
-        # Create RGB composite: Red=VV (soil), Green=VH (vegetation), Blue=Ratio (water)
+        # VV (Red channel): Soil moisture/roughness
+        # Tighter range to make bare soil more distinct
+        vv_norm = vv.unitScale(-18, -6).multiply(255)
+        
+        # VH (Green channel): Vegetation volume scattering
+        # Enhanced sensitivity to show crop density differences
+        # Lower min value to capture sparse vegetation better
+        vh_norm = vh.unitScale(-26, -11).multiply(255)
+        
+        # Ratio (Blue channel): Water/smooth surface indicator
+        # Adjusted for clearer water distinction
+        ratio_norm = ratio.unitScale(0.4, 2.8).multiply(255)
+        
+        # Create RGB composite with enhanced vegetation contrast
+        # Apply slight gamma boost to green channel for crop density
         rgb_image = ee.Image.rgb(
-            vv_norm,      # Red: Bare soil shows brown/red
-            vh_norm,      # Green: Vegetation shows green
-            ratio_norm    # Blue: Water shows blue
+            vv_norm,                    # Red: Bare soil (brown/red)
+            vh_norm.pow(0.9),          # Green: Vegetation (enhanced for density)
+            ratio_norm                  # Blue: Water (blue)
         ).byte()
         
-        logger.info(f"[RADAR] Using optimized multi-band RGB (Blue=Water, Brown=Soil, Green=Vegetation)")
+        logger.info(f"[RADAR] Using enhanced multi-band RGB (Better crop density separation)")
         
         # Skip RVI metrics for performance
         mean_rvi = None
