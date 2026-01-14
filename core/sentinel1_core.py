@@ -98,27 +98,26 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Calculate VV/VH ratio for water/soil/vegetation distinction
         ratio = vv.divide(vh).rename('ratio')
         
-        # PROFESSIONAL-GRADE RGB WITH VIBRANT COLORS
-        # Designed for insurance underwriters - clear visual distinction
+        # EXTREME COLOR BOOSTING FOR PROFESSIONAL VISUALIZATION
+        # Maximum contrast and vibrant colors for underwriters
         
-        # VV (Red channel): Soil - MUTED to reduce dominance
-        vv_norm = vv.unitScale(-20, -5).multiply(150)  # Heavily reduced
+        # VV (Red): Soil - MINIMAL
+        vv_norm = vv.unitScale(-20, -5).multiply(100)
         
-        # VH (Green channel): Vegetation - BRIGHT GREEN for crops
-        vh_norm = vh.unitScale(-28, -10).multiply(300).clamp(0, 255)  # Boosted!
+        # VH (Green): Vegetation - MAXIMUM BRIGHT GREEN
+        vh_norm = vh.unitScale(-30, -8).multiply(400).clamp(0, 255)
         
-        # Ratio (Blue channel): Water - VIVID BLUE
-        ratio_norm = ratio.unitScale(0.2, 3.5).multiply(320).clamp(0, 255)  # Boosted!
+        # Ratio (Blue): Water - MAXIMUM VIVID BLUE  
+        ratio_norm = ratio.unitScale(0.1, 4).multiply(400).clamp(0, 255)
         
-        # Create PROFESSIONAL RGB composite
-        # Green vegetation POPS, Blue water is VIVID, Brown soil is subtle
+        # RGB with EXTREME color separation
         rgb_image = ee.Image.rgb(
-            vv_norm,                    # Red: Soil (muted brown)
-            vh_norm.pow(0.75),          # Green: BRIGHT vegetation
-            ratio_norm                  # Blue: VIVID water
+            vv_norm,          # Minimal brown
+            vh_norm,          # BRIGHT GREEN
+            ratio_norm        # VIVID BLUE
         ).byte()
         
-        logger.info(f"[RADAR] Professional RGB: BRIGHT GREEN crops, VIVID BLUE water")
+        logger.info(f"[RADAR] EXTREME colors: Bright green crops, Vivid blue water")
         
         # Skip RVI metrics for performance
         mean_rvi = None
