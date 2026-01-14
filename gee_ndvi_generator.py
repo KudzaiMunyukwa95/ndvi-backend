@@ -33,6 +33,7 @@ from middleware.auth import require_auth, log_authentication_status
 from services.report_service import analyze_growth_stage, build_report_structure, validate_indices
 from services.openai_client import generate_ai_analysis
 from services.pdf_service import generate_pdf_report
+from core.sentinel1_core import get_radar_visualization_url
 import base64
 
 
@@ -1661,7 +1662,7 @@ def generate_ndvi():
             return jsonify({"success": False, "error": "Missing input fields"}), 400
         
         # Validate index type
-        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB"]
+        valid_indices = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "RGB", "RADAR"]
         if index_type not in valid_indices:
             return jsonify({
                 "success": False,
@@ -1700,6 +1701,30 @@ def generate_ndvi():
         
         # [TIMING] Geometry creation: {geometry_elapsed:.3f}s
         logger.info(f"[TIMING] Geometry creation: {geometry_elapsed:.3f}s")
+        
+        # RADAR LOGIC
+        if index_type == "RADAR":
+            logger.info("Processing RADAR request")
+            tile_url, size = get_radar_visualization_url(polygon, start, end)
+            
+            if not tile_url:
+                return jsonify({
+                    "success": False,
+                    "error": "No Sentinel-1 Radar imagery found",
+                    "index": "RADAR"
+                }), 404
+                
+            return jsonify({
+                "success": True,
+                "index": "RADAR",
+                "tile_url": tile_url,
+                "palette": ["#000000", "#FFFFFF"],
+                "range": [-25, 0],
+                "explanation": "Sentinel-1 Radar (VV=Red, VH=Green, Ratio=Blue) - Cloud Penetrating",
+                "collection_size": size,
+                "cloud_cover": 0,  # Radar penetrates clouds
+                "image_date": end
+            })
 
 
         # [TIMING] Get optimized collection with new cloud cover calculation
