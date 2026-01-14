@@ -278,11 +278,15 @@ def build_report_structure(
             }
         }
 
+    # DEBUG: Log what indices we received
+    logger.info(f"[REPORT DEBUG] indices_data keys: {list(indices_data.keys()) if isinstance(indices_data, dict) else 'NOT A DICT'}")
+    logger.info(f"[REPORT DEBUG] indices_data.get('data_source'): {indices_data.get('data_source', 'MISSING') if isinstance(indices_data, dict) else 'N/A'}")
+    
     report = {
         "report_date": datetime.date.today().isoformat(),
         "database_field_info": field_info,
         "growth_stage": growth_data,
-        "vegetation_indices": indices_data,
+        "vegetation_indices": indices_data,  # This IS the validated indices from caller
         "executive_verdict": ai_analysis.get("executive_verdict", "Pending"),
         "final_field_verdict": ai_analysis.get("final_field_verdict", ""),
         "executive_summary": ai_analysis.get("executive_summary", {}),
