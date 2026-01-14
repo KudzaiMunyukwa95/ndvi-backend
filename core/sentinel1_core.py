@@ -121,8 +121,14 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         
         # CALCULATE RVI METRICS FOR AI REPORTS (Fast sampling method)
         try:
+            # RVI requires LINEAR units, but Sentinel-1 is in dB
+            # Convert dB to linear: 10^(dB/10)
+            vv_lin = ee.Image.constant(10).pow(vv.divide(10))
+            vh_lin = ee.Image.constant(10).pow(vh.divide(10))
+            
             # Calculate RVI: (4 * VH) / (VV + VH)
-            rvi = vh.multiply(4).divide(vv.add(vh)).rename('RVI')
+            # Range: 0 (Bare Soil) to 1 (Dense Vegetation)
+            rvi = vh_lin.multiply(4).divide(vv_lin.add(vh_lin)).rename('RVI')
             
             # Fast sampling: Use 50 random points instead of full reduceRegion
             # This avoids timeout while providing accurate statistics
