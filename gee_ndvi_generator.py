@@ -1705,14 +1705,16 @@ def generate_ndvi():
         # RADAR LOGIC
         if index_type == "RADAR":
             logger.info("Processing RADAR request")
-            tile_url, size = get_radar_visualization_url(polygon, start, end)
+            result = get_radar_visualization_url(polygon, start, end)
             
-            if not tile_url:
+            if not result[0]:  # tile_url is None
                 return jsonify({
                     "success": False,
                     "error": "No Sentinel-1 Radar imagery found",
                     "index": "RADAR"
                 }), 404
+            
+            tile_url, size, metadata = result
                 
             return jsonify({
                 "success": True,
@@ -1725,7 +1727,9 @@ def generate_ndvi():
                 # No mean/min/max for RADAR (it's a false-color composite, not a single-band index)
                 "mean": None,
                 "min": None,
-                "max": None
+                "max": None,
+                # Satellite metadata for professional display
+                "satellite": metadata
             })
 
 
@@ -1797,11 +1801,19 @@ def generate_ndvi():
         cloud_calc_start_time = time.perf_counter()
         scene_cloud_percentage = first_image.get("CLOUDY_PIXEL_PERCENTAGE")
         
-        # Get image date
+        # Get image date and satellite metadata
         image_date = first_image.date().format("YYYY-MM-dd").getInfo()
+        image_time = first_image.date().format("YYYY-MM-dd HH:mm:ss").getInfo()
         scene_cloud_pct = scene_cloud_percentage.getInfo()
+        
+        # Extract satellite metadata for professional display
+        satellite_name = first_image.get("SPACECRAFT_NAME").getInfo()  # e.g., "Sentinel-2A"
+        sensor_id = first_image.get("SENSOR_ID").getInfo()  # e.g., "MSI"
+        processing_level = first_image.get("PROCESSING_LEVEL").getInfo()  # e.g., "Level-2A"
+        
         cloud_calc_elapsed = time.perf_counter() - cloud_calc_start_time
         logger.info(f"[TIMING] Cloud cover calculated: {cloud_calc_elapsed:.3f}s")
+        logger.info(f"[METADATA] Satellite: {satellite_name}, Sensor: {sensor_id}, Level: {processing_level}")
         
         # [TIMING] Get map ID for tile URL
         map_id_start_time = time.perf_counter()
@@ -1844,6 +1856,16 @@ def generate_ndvi():
                 response["mean"] = stats_dict.get(f"{stat_key}_mean")
                 response["min"] = stats_dict.get(f"{stat_key}_min")
                 response["max"] = stats_dict.get(f"{stat_key}_max")
+            
+            # Add satellite metadata for professional display
+            response["satellite"] = {
+                "name": satellite_name,
+                "sensor": sensor_id,
+                "processing_level": processing_level,
+                "acquisition_time": image_time,
+                "resolution": "10m",
+                "platform": "Copernicus Sentinel-2"
+            }
             
             # [TIMING] Cache the response
             cache_store_start_time = time.perf_counter()
