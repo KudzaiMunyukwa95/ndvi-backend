@@ -93,28 +93,27 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         vh = mosaic.select('VH')
         
         # Calculate VV/VH ratio (vegetation indicator)
-        # High ratio = vegetation, Low ratio = bare soil/water
         ratio = vv.subtract(vh).rename('ratio')
         
-        # Create intuitive false-color composite:
-        # RED channel: VH (vegetation structure) - shows crop density
-        # GREEN channel: Ratio (vegetation indicator) - highlights healthy crops
-        # BLUE channel: VV (surface roughness) - shows water/smooth surfaces
+        # Create intuitive false-color composite for agriculture:
+        # Water: Dark blue (low VV, low VH, low ratio)
+        # Bare Soil: Brown/tan (medium VV, low VH, low ratio)
+        # Vegetation: Green (medium VV, higher VH, high ratio)
         
-        # Normalize to 0-1 range for better visualization
-        vh_norm = vh.unitScale(-25, -5)
-        ratio_norm = ratio.unitScale(1, 8)
-        vv_norm = vv.unitScale(-20, 0)
+        # Adjusted normalization ranges based on typical backscatter values
+        vv_norm = vv.unitScale(-25, -5)      # VV range
+        vh_norm = vh.unitScale(-30, -10)     # VH range (vegetation has higher VH)
+        ratio_norm = ratio.unitScale(3, 12)  # Ratio range (vegetation has high ratio)
         
-        # Create RGB composite
-        # This will show: Green = vegetation, Brown = bare soil, Dark blue = water
+        # Create RGB composite with adjusted weights
+        # This will show: Dark blue = water, Brown = bare soil, Green = vegetation
         rgb_image = ee.Image.rgb(
-            vh_norm.multiply(255),      # Red: vegetation structure
+            vv_norm.multiply(180),       # Red: reduced to avoid oversaturation
             ratio_norm.multiply(255),    # Green: vegetation indicator (main channel)
-            vv_norm.multiply(100)        # Blue: reduced to make vegetation greener
+            vv_norm.multiply(255).subtract(vh_norm.multiply(200))  # Blue: inverted for water
         ).byte()
         
-        logger.info(f"[RADAR] Using vegetation-focused false-color (Green=Crops, Brown=Soil, Blue=Water)")
+        logger.info(f"[RADAR] Using agriculture-focused false-color (Blue=Water, Brown=Soil, Green=Vegetation)")
         
         # Get MapID using new GEE API format
         map_id = rgb_image.getMapId()
