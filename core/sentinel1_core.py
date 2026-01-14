@@ -88,70 +88,35 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Mosaic logic: Reduce to a single image (median to remove speckle)
         mosaic = collection.median().clip(geometry)
         
-        # ADVANCED SPECKLE FILTERING - Lee Sigma Filter
-        # This dramatically improves image quality for agricultural monitoring
-        kernel_size = 7  # 7x7 window for optimal edge preservation
+        # Simple speckle filtering (single pass for speed)
+        mosaic = mosaic.focalMedian(radius=1.5, kernelType='square', units='pixels')
         
-        # Multi-temporal filtering using refined focal median
-        # Apply twice for better speckle reduction
-        filtered = mosaic.focalMedian(radius=kernel_size/2, kernelType='square', units='pixels')
-        filtered = filtered.focalMedian(radius=2, kernelType='square', units='pixels')
+        # Extract polarizations
+        vv = mosaic.select('VV')
+        vh = mosaic.select('VH')
         
-        # Extract polarizations from filtered image
-        vv = filtered.select('VV')
-        vh = filtered.select('VH')
+        # Calculate VV/VH ratio (vegetation indicator)
+        ratio = vv.subtract(vh).rename('ratio')
         
-        # MULTI-BAND APPROACH FOR CLEAR DISTINCTION
-        # Instead of single RVI, use combination of polarizations and indices
+        # Simple normalization for speed
+        vv_norm = vv.unitScale(-17, -5)
+        vh_norm = vh.unitScale(-26, -13)
+        ratio_norm = ratio.unitScale(3, 12)
         
-        # Calculate RVI for vegetation
-        rvi = vh.multiply(4).divide(vv.add(vh)).rename('RVI')
-        
-        # Calculate VV/VH ratio (crop structure indicator)
-        ratio = vv.divide(vh).rename('ratio')
-        
-        # Normalize each band to 0-255 for RGB composite
-        # VV: Soil moisture / surface roughness (-20 to -5 dB)
-        vv_norm = vv.unitScale(-20, -5).multiply(255)
-        
-        # VH: Volume scattering / vegetation (-28 to -12 dB)  
-        vh_norm = vh.unitScale(-28, -12).multiply(255)
-        
-        # Ratio: Crop type / structure (0.3 to 3)
-        ratio_norm = ratio.unitScale(0.3, 3).multiply(255)
-        
-        # CREATE RGB COMPOSITE FOR CLEAR DISTINCTION:
-        # Red channel: VV (bare soil shows bright red)
-        # Green channel: VH (vegetation shows bright green)
-        # Blue channel: Ratio (water shows bright blue)
-        rgb_composite = ee.Image.rgb(
-            vv_norm,      # Red: Bare soil, dry areas
-            vh_norm,      # Green: Vegetation, crops
-            ratio_norm    # Blue: Water, smooth surfaces
+        # Simple RGB composite (fast)
+        rgb_image = ee.Image.rgb(
+            vv_norm.multiply(180),
+            ratio_norm.multiply(255),
+            vv_norm.multiply(255).subtract(vh_norm.multiply(200))
         ).byte()
         
-        # Apply color correction for agricultural interpretation
-        # Enhance contrast to make differences more visible
-        rgb_viz = rgb_composite.visualize(
-            min=[0, 0, 0],
-            max=[255, 255, 255],
-            gamma=[1.2, 1.0, 1.2]  # Boost red and blue slightly
-        )
+        logger.info(f"[RADAR] Using simple RGB composite for speed")
         
-        logger.info(f"[RADAR] Using multi-band RGB composite (VV=Red, VH=Green, Ratio=Blue)")
-        logger.info(f"[RADAR] Interpretation: Brown=Bare Soil, Green=Vegetation, Blue=Water, Yellow=Mixed")
-        
-        # CALCULATE RVI METRICS FOR INSURANCE DECISIONS (OPTIONAL - can be slow)
-        # Only calculate if explicitly requested to avoid timeout
-        # For now, skip metrics to maintain performance
+        # Skip RVI metrics for performance
         mean_rvi = None
         min_rvi = None
         max_rvi = None
         health_score = None
-        
-        # TODO: Add separate endpoint for RVI metrics calculation
-        # This should be called separately after imagery loads
-        logger.info(f"[RADAR] Skipping RVI metrics calculation for performance")
         
         # Extract Sentinel-1 metadata from first image
         first_image = ee.Image(collection.first())
@@ -163,14 +128,14 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         logger.info(f"[RADAR METADATA] Sentinel-1{satellite_name}, Orbit: {orbit_direction}, Mode: {instrument_mode}")
         
         # Get MapID using new GEE API format
-        map_id = rgb_viz.getMapId()
+        map_id = rgb_image.getMapId()
         
         # Construct tile URL (FIXED METHOD - same as optical imagery)
         base_url = "https://earthengine.googleapis.com/v1alpha"
         mapid = map_id.get('mapid')
         tile_url = f"{base_url}/{mapid}/tiles/{{z}}/{{x}}/{{y}}"
         
-        logger.info(f"[RADAR] Generated multi-band RGB tile URL: {tile_url}")
+        logger.info(f"[RADAR] Generated tile URL: {tile_url}")
         
         # Create metadata dictionary with RVI metrics
         metadata = {
