@@ -180,10 +180,31 @@ def _get_critical_factors(stage):
 
 def validate_indices(indices):
     """
-    Clean and validate vegetation indices.
+    Clean and validate vegetation indices (optical or RADAR).
     """
     validated = {}
     
+    # Check if RADAR data
+    data_source = indices.get("data_source", "optical")
+    if data_source == "sentinel1_radar":
+        # RADAR mode: Use RVI instead of optical indices
+        rvi = indices.get("mean")  # RVI is in 'mean' field
+        if rvi is not None:
+            validated["rvi"] = max(0.0, min(1.0, rvi))
+            validated["rvi_min"] = indices.get("min", rvi)
+            validated["rvi_max"] = indices.get("max", rvi)
+        else:
+            validated["rvi"] = None
+            validated["rvi_min"] = None
+            validated["rvi_max"] = None
+        
+        validated["data_source"] = "radar"
+        validated["health_score"] = indices.get("health_score")
+        
+        logger.info(f"[REPORT] RADAR mode: RVI={validated.get('rvi')}")
+        return validated
+    
+    # OPTICAL mode: Validate standard indices
     # EVI sanity check [-1, 1]
     evi = indices.get("EVI")
     if evi is not None:
@@ -218,6 +239,9 @@ def validate_indices(indices):
         validated["ndwi"] = max(-1.0, min(1.0, ndwi))
     else:
         validated["ndwi"] = None
+    
+    validated["data_source"] = "optical"
+    logger.info(f"[REPORT] Optical mode: NDVI={validated.get('ndvi')}")
 
     return validated
 
