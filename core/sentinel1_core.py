@@ -91,13 +91,16 @@ def get_radar_visualization_url(geometry, start_date, end_date):
         # Calculate visualization bands
         vis_image = calculate_radar_visualization(mosaic)
         
-        # Visualization Parameters (Min/Max in dB)
+        # Visualization Parameters - Adjusted for better visibility
+        # Using linear scale instead of dB for clearer visualization
         vis_params = {
             'bands': ['VV', 'VH', 'Ratio'],
-            'min': [-20, -25, 1],   # VV, VH, Ratio
-            'max': [0, -5, 15],     # VV, VH, Ratio
-            'gamma': 1.6            # Gamma correction for contrast
+            'min': [-25, -30, 0.5],   # Adjusted for better contrast
+            'max': [0, -5, 2.5],      # Wider range for visibility
+            'gamma': [1.2, 1.2, 1.2]  # Gamma correction for each band
         }
+        
+        logger.info(f"[RADAR] Applying visualization with params: {vis_params}")
         
         # Explicitly visualize to create 8-bit RGB image
         rgb_image = vis_image.visualize(**vis_params)
