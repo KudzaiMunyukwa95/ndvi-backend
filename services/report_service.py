@@ -1,213 +1,355 @@
-
-import ee
+import datetime
 import logging
-import json
-from datetime import datetime, timedelta
-
-# Core configuration for Sentinel-1
-# We use Interferometric Wide Swath (IW) mode for land monitoring
-# GRD: Ground Range Detected (Standard Product)
-S1_COLLECTION = "COPERNICUS/S1_GRD"
 
 logger = logging.getLogger(__name__)
 
-def get_s1_collection(geometry, start_date, end_date, orbit_pass=None):
-    """
-    Fetch filtered Sentinel-1 collection for visualization.
-    
-    Args:
-        geometry: ee.Geometry polygon
-        start_date: string 'YYYY-MM-DD'
-        end_date: string 'YYYY-MM-DD'
-        orbit_pass: 'ASCENDING' or 'DESCENDING' (Optional, default None = Any)
-        
-    Returns:
-        ee.ImageCollection
-    """
-    try:
-        # Load Sentinel-1 Collection
-        s1 = ee.ImageCollection(S1_COLLECTION) \
-            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
-            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH')) \
-            .filter(ee.Filter.eq('instrumentMode', 'IW')) \
-            .filterBounds(geometry) \
-            .filterDate(start_date, end_date)
-            
-        # Filter by orbit pass if specified
-        if orbit_pass:
-            s1 = s1.filter(ee.Filter.eq('orbitProperties_pass', orbit_pass))
-            
-        return s1
-        
-    except Exception as e:
-        logger.error(f"Error fetching Sentinel-1 collection: {e}")
-        return None
+# Comprehensive crop profiles with durations
+CROP_PROFILES = {
+    "Maize": {
+        "duration_days": 135,
+        "emergence": (0, 10),
+        "vegetative": (11, 60),
+        "reproductive": (61, 100),
+        "maturity": (101, 135)
+    },
+    "Soyabeans": {
+        "duration_days": 110,
+        "emergence": (0, 10),
+        "vegetative": (11, 45),
+        "reproductive": (46, 90),
+        "maturity": (91, 110)
+    },
+    "Wheat": {
+        "duration_days": 120,
+        "emergence": (0, 10),
+        "vegetative": (11, 60),
+        "reproductive": (61, 100),
+        "maturity": (101, 120)
+    },
+    "Sorghum": {
+        "duration_days": 100,
+        "emergence": (0, 8),
+        "vegetative": (9, 50),
+        "reproductive": (51, 85),
+        "maturity": (86, 100)
+    },
+    "Cotton": {
+        "duration_days": 140,
+        "emergence": (0, 10),
+        "vegetative": (11, 70),
+        "reproductive": (71, 120),
+        "maturity": (121, 140)
+    },
+    "Groundnuts": {
+        "duration_days": 115,
+        "emergence": (0, 10),
+        "vegetative": (11, 50),
+        "reproductive": (51, 95),
+        "maturity": (96, 115)
+    },
+    "Barley": {
+        "duration_days": 90,
+        "emergence": (0, 8),
+        "vegetative": (9, 45),
+        "reproductive": (46, 75),
+        "maturity": (76, 90)
+    },
+    "Millet": {
+        "duration_days": 100,
+        "emergence": (0, 8),
+        "vegetative": (9, 45),
+        "reproductive": (46, 80),
+        "maturity": (81, 100)
+    },
+    "Tobacco": {
+        "duration_days": 130,
+        "emergence": (0, 10),
+        "vegetative": (11, 60),
+        "reproductive": (61, 110),
+        "maturity": (111, 130)
+    },
+    # Default fallback
+    "default": {
+        "duration_days": 120,
+        "emergence": (0, 10),
+        "vegetative": (11, 50),
+        "reproductive": (51, 90),
+        "maturity": (91, 120)
+    }
+}
 
-def calculate_radar_visualization(image):
-    """
-    Create a False-Color Composite from Radar Backscatter.
-    
-    Physics:
-    - VV: Vertical Structure (Urban, Stems) -> RED
-    - VH: Volume Scattering (Canopy Biomass) -> GREEN
-    - VV/VH: Ratio (Texture/Moisture) -> BLUE
-    
-    This creates an image where:
-    - Green = Healthy Crops
-    - Red/Pink = Urban or Bare Tilled Soil
-    - Blue/Black = Water
-    """
-    # Convert Linear to Decibels (dB)
-    # 10 * log10(x)
-    # Clamp to avoid -Infinity at 0
-    image_db = image.clamp(0.0005, 100).log10().multiply(10.0)
-    
-    # Select bands (Now in Decibels)
-    vv = image_db.select('VV')
-    vh = image_db.select('VH')
-    
-    # Create the Ratio Band (VV / VH)
-    # Ratio in dB = VV_dB - VH_dB (Log rules)
-    ratio = vv.subtract(vh).rename('Ratio')
-    
-    # Create Composite
-    return image_db.addBands(ratio).select(['VV', 'VH', 'Ratio'])
+# Harvest detection threshold (days beyond crop duration)
+HARVEST_THRESHOLD_DAYS = 30
 
-def get_radar_visualization_url(geometry, start_date, end_date):
+def analyze_growth_stage(crop, planting_date, current_date_str=None):
     """
-    Get a tile URL for the Radar Visualization Layer.
+    Determine growth stage and days since planting with harvest detection.
     """
-    try:
-        # Get collection
-        collection = get_s1_collection(geometry, start_date, end_date)
-        
-        if collection.size().getInfo() == 0:
-            logger.warning("No Sentinel-1 images found for this period")
-            return None, 0
-            
-        # Mosaic logic: Reduce to a single image (median to remove speckle)
-        mosaic = collection.median().clip(geometry)
-        
-        # Single-pass speckle filtering (fast but effective)
-        filtered = mosaic.focalMedian(radius=1.5, kernelType='square', units='pixels')
-        
-        # Extract polarizations
-        vv = filtered.select('VV')
-        vh = filtered.select('VH')
-        
-        # Calculate VV/VH ratio for water/soil/vegetation distinction
-        ratio = vv.divide(vh).rename('ratio')
-        
-        # MULTI-BAND RGB COMPOSITE - PROVEN APPROACH
-        # This gives clear visual distinction: Blue water, Brown soil, Green vegetation
-        
-        # VV (Red channel): Soil moisture/roughness
-        vv_norm = vv.unitScale(-20, -5).multiply(255)
-        
-        # VH (Green channel): Vegetation volume scattering
-        vh_norm = vh.unitScale(-28, -12).multiply(255)
-        
-        # Ratio (Blue channel): Water/smooth surface indicator
-        ratio_norm = ratio.unitScale(0.3, 3).multiply(280).clamp(0, 255)
-        
-        # Create RGB composite
-        rgb_image = ee.Image.rgb(
-            vv_norm,      # Red: Soil (brown/orange)
-            vh_norm,      # Green: Vegetation
-            ratio_norm    # Blue: Water (enhanced)
-        ).byte()
-        
-        logger.info(f"[RADAR] Multi-band RGB: Blue=Water, Brown=Soil, Green=Vegetation")
-        
-        # CALCULATE RVI METRICS FOR AI REPORTS (Fast sampling method)
-        try:
-            # RVI requires LINEAR units, but Sentinel-1 is in dB
-            # Convert dB to linear: 10^(dB/10)
-            vv_lin = ee.Image.constant(10).pow(vv.divide(10))
-            vh_lin = ee.Image.constant(10).pow(vh.divide(10))
-            
-            # Calculate RVI: (4 * VH) / (VV + VH)
-            # Range: 0 (Bare Soil) to 1 (Dense Vegetation)
-            rvi = vh_lin.multiply(4).divide(vv_lin.add(vh_lin)).rename('RVI')
-            
-            # Fast sampling: Use 50 random points instead of full reduceRegion
-            # This avoids timeout while providing accurate statistics
-            sample_points = ee.FeatureCollection.randomPoints(geometry, 50, seed=42)
-            
-            # Sample RVI values at these points
-            rvi_samples = rvi.sampleRegions(
-                collection=sample_points,
-                scale=10,
-                geometries=False
-            )
-            
-            # Calculate statistics from samples
-            rvi_stats = rvi_samples.aggregate_stats('RVI').getInfo()
-            
-            mean_rvi = rvi_stats.get('mean')
-            min_rvi = rvi_stats.get('min')
-            max_rvi = rvi_stats.get('max')
-            
-            # Convert RVI to Health Score (0-100) for insurance
-            if mean_rvi is not None:
-                rvi_clamped = max(0.2, min(0.8, mean_rvi))
-                health_score = ((rvi_clamped - 0.2) / 0.6) * 100
-                health_score = round(health_score, 1)
-            else:
-                health_score = None
-            
-            logger.info(f"[RADAR METRICS] Mean RVI: {mean_rvi:.3f}, Health Score: {health_score}/100")
-            
-        except Exception as e:
-            logger.warning(f"[RADAR] Could not calculate RVI metrics: {e}")
-            mean_rvi = None
-            min_rvi = None
-            max_rvi = None
-            health_score = None
-        
-        # Extract Sentinel-1 metadata from first image
-        first_image = ee.Image(collection.first())
-        satellite_name = first_image.get("platform_number").getInfo()  # "A" or "B"
-        orbit_direction = first_image.get("orbitProperties_pass").getInfo()  # "ASCENDING" or "DESCENDING"
-        instrument_mode = first_image.get("instrumentMode").getInfo()  # "IW"
-        acquisition_time = first_image.date().format("YYYY-MM-dd HH:mm:ss").getInfo()
-        
-        logger.info(f"[RADAR METADATA] Sentinel-1{satellite_name}, Orbit: {orbit_direction}, Mode: {instrument_mode}")
-        
-        # Get MapID using new GEE API format
-        map_id = rgb_image.getMapId()
-        
-        # Construct tile URL (FIXED METHOD - same as optical imagery)
-        base_url = "https://earthengine.googleapis.com/v1alpha"
-        mapid = map_id.get('mapid')
-        tile_url = f"{base_url}/{mapid}/tiles/{{z}}/{{x}}/{{y}}"
-        
-        logger.info(f"[RADAR] Generated tile URL: {tile_url}")
-        
-        # Create metadata dictionary with RVI metrics
-        metadata = {
-            "name": f"Sentinel-1{satellite_name}",
-            "sensor": "C-SAR",
-            "orbit_direction": orbit_direction,
-            "instrument_mode": instrument_mode,
-            "polarization": "VV+VH",
-            "acquisition_time": acquisition_time,
-            "resolution": "10m",
-            "platform": "Copernicus Sentinel-1",
-            "processing": "Multi-band RGB with RVI metrics"
+    if not planting_date:
+        return {
+            "stage": "unknown",
+            "stage_description": "Planting date not provided",
+            "days_since_planting": None,
+            "critical_factors": [],
+            "is_harvested": False
         }
-        
-        # Create RVI metrics dictionary for insurance decisions
-        rvi_metrics = {
-            "mean_rvi": round(mean_rvi, 3) if mean_rvi is not None else None,
-            "min_rvi": round(min_rvi, 3) if min_rvi is not None else None,
-            "max_rvi": round(max_rvi, 3) if max_rvi is not None else None,
-            "health_score": health_score
-        }
-        
-        return tile_url, collection.size().getInfo(), metadata, rvi_metrics
-        
-    except Exception as e:
-        logger.error(f"Error generating Radar URL: {e}")
-        return None, 0, None, None
 
+    try:
+        p_date = datetime.datetime.strptime(planting_date, "%Y-%m-%d").date()
+        if current_date_str:
+            c_date = datetime.datetime.strptime(current_date_str, "%Y-%m-%d").date()
+        else:
+            c_date = datetime.date.today()
+
+        days = (c_date - p_date).days
+
+        if days < 0:
+            return {
+                "stage": "planned",
+                "stage_description": f"Planting planned in {abs(days)} days",
+                "days_since_planting": days,
+                "critical_factors": ["Soil preparation", "Seed acquisition"],
+                "is_harvested": False
+            }
+
+        # Get crop profile
+        profile = CROP_PROFILES.get(crop, CROP_PROFILES["default"])
+        duration = profile["duration_days"]
+        
+        # Check if crop has been harvested (days > duration + threshold)
+        if days > (duration + HARVEST_THRESHOLD_DAYS):
+            return {
+                "stage": "harvested",
+                "stage_description": f"Crop harvested (expected duration: {duration} days). Observed vegetation likely from regrowth, weeds, or volunteer plants.",
+                "days_since_planting": days,
+                "critical_factors": ["Land preparation", "Residue management", "Next season planning"],
+                "is_harvested": True,
+                "crop_duration": duration
+            }
+        
+        # Determine current stage
+        stage = "unknown"
+        description = "Unknown stage"
+        
+        if days <= profile["emergence"][1]:
+            stage = "emergence"
+            description = "Germination and early seedling establishment"
+        elif days <= profile["vegetative"][1]:
+            stage = "vegetative"
+            description = "Active leaf development and canopy expansion"
+        elif days <= profile["reproductive"][1]:
+            stage = "reproductive"
+            description = "Flowering, pollination, and grain/fruit filling"
+        elif days <= profile["maturity"][1]:
+            stage = "maturity"
+            description = "Physiological maturity and senescence"
+        else:
+            stage = "late_maturity"
+            description = f"Late maturity or post-harvest (within {HARVEST_THRESHOLD_DAYS} days of expected harvest)"
+
+        return {
+            "stage": stage,
+            "stage_description": description,
+            "days_since_planting": days,
+            "critical_factors": _get_critical_factors(stage),
+            "is_harvested": False,
+            "crop_duration": duration,
+            "days_to_harvest": max(0, duration - days) if days < duration else 0
+        }
+
+    except Exception as e:
+        logger.error(f"Error calculating growth stage: {e}")
+        return {
+            "stage": "unknown",
+            "stage_description": "Error calculating stage",
+            "days_since_planting": None,
+            "critical_factors": [],
+            "is_harvested": False
+        }
+
+def _get_critical_factors(stage):
+    if stage == "emergence":
+        return ["Soil moisture", "Soil temperature", "Seed quality"]
+    elif stage == "vegetative":
+        return ["Nitrogen availability", "Weed competition", "Water stress"]
+    elif stage == "reproductive":
+        return ["Water stress (critical)", "Disease pressure", "Temperature stress"]
+    elif stage == "maturity":
+        return ["Harvest timing", "Pest damage", "Grain moisture"]
+    return []
+
+def validate_indices(indices):
+    """
+    Clean and validate vegetation indices (optical or RADAR).
+    """
+    validated = {}
+    
+    # Check if RADAR data
+    data_source = indices.get("data_source", "optical")
+    if data_source == "sentinel1_radar":
+        # RADAR mode: Use RVI instead of optical indices
+        rvi = indices.get("mean")  # RVI is in 'mean' field
+        if rvi is not None:
+            validated["rvi"] = max(0.0, min(1.0, rvi))
+            validated["rvi_min"] = indices.get("min", rvi)
+            validated["rvi_max"] = indices.get("max", rvi)
+        else:
+            validated["rvi"] = None
+            validated["rvi_min"] = None
+            validated["rvi_max"] = None
+        
+        validated["data_source"] = "radar"
+        validated["health_score"] = indices.get("health_score")
+        
+        logger.info(f"[REPORT] RADAR mode: RVI={validated.get('rvi')}")
+        return validated
+    
+    # OPTICAL mode: Validate standard indices
+    # EVI sanity check [-1, 1]
+    evi = indices.get("EVI")
+    if evi is not None:
+        validated["evi"] = max(-1.0, min(1.0, evi))
+    else:
+        validated["evi"] = None
+
+    # NDVI
+    ndvi = indices.get("NDVI")
+    if ndvi is not None:
+        validated["ndvi"] = max(-1.0, min(1.0, ndvi))
+    else:
+        validated["ndvi"] = None
+
+    # SAVI
+    savi = indices.get("SAVI")
+    if savi is not None:
+        validated["savi"] = max(-1.0, min(1.0, savi))
+    else:
+        validated["savi"] = None
+        
+    # NDMI
+    ndmi = indices.get("NDMI")
+    if ndmi is not None:
+        validated["ndmi"] = max(-1.0, min(1.0, ndmi))
+    else:
+        validated["ndmi"] = None
+        
+    # NDWI
+    ndwi = indices.get("NDWI")
+    if ndwi is not None:
+        validated["ndwi"] = max(-1.0, min(1.0, ndwi))
+    else:
+        validated["ndwi"] = None
+    
+    validated["data_source"] = "optical"
+    logger.info(f"[REPORT] Optical mode: NDVI={validated.get('ndvi')}")
+
+    return validated
+
+def build_report_structure(
+    field_info,
+    growth_data,
+    indices_data,
+    ai_analysis=None
+):
+    """
+    Assemble the final report dictionary.
+    """
+    
+    # Default empty analysis if AI fails or not provided yet
+    if not ai_analysis:
+        ai_analysis = {
+            "executive_verdict": "Pending",
+            "final_field_verdict": "Analysis pending...",
+            "executive_summary": {
+                "crop_status": "Pending",
+                "field_condition": "Pending",
+                "management_priority": "Pending",
+                "one_line_summary": "Analysis pending..."
+            },
+            "cross_index_synthesis": "Analysis pending...",
+            "physiological_narrative": "Analysis pending...",
+            "index_interpretation": {},
+            "temporal_trend": {
+                "direction": "Unknown",
+                "statement": "Pending analysis..."
+            },
+            "confidence_assessment": {
+                "score": 0.0,
+                "explanation": "Pending analysis..."
+            },
+            "farmer_guidance": {
+                "immediate_actions_0_7_days": [],
+                "field_checks": [],
+                "harvest_or_next_season": "Pending..."
+            },
+            "professional_technical_notes": {
+                "canopy_structure": "Pending...",
+                "biomass_distribution": "Pending...",
+                "moisture_stress_interaction": "Pending...",
+                "senescence_quality": "Pending...",
+                "spatial_heterogeneity": "Pending..."
+            },
+            "agronomist_notes": {
+                "cause_and_effect": "Pending analysis...",
+                "technical_summary": "Pending analysis...",
+                "yield_implications": "Pending analysis...",
+                "risk_factors": []
+            },
+            "historical_context": {
+                "comparison_period": "Pending...",
+                "seasonal_trend": "Pending...",
+                "trend_description": "Pending..."
+            }
+        }
+
+    # DEBUG: Log what indices we received
+    logger.info(f"[REPORT DEBUG] indices_data keys: {list(indices_data.keys()) if isinstance(indices_data, dict) else 'NOT A DICT'}")
+    logger.info(f"[REPORT DEBUG] indices_data.get('data_source'): {indices_data.get('data_source', 'MISSING') if isinstance(indices_data, dict) else 'N/A'}")
+    
+    report = {
+        "report_date": datetime.date.today().isoformat(),
+        "database_field_info": field_info,
+        "growth_stage": growth_data,
+        "vegetation_indices": indices_data,  # This IS the validated indices from caller
+        "executive_verdict": ai_analysis.get("executive_verdict", "Pending"),
+        "final_field_verdict": ai_analysis.get("final_field_verdict", ""),
+        "executive_summary": ai_analysis.get("executive_summary", {}),
+        "cross_index_synthesis": ai_analysis.get("cross_index_synthesis", ""),
+        "physiological_narrative": ai_analysis.get("physiological_narrative", ""),
+        "index_interpretation": ai_analysis.get("index_interpretation", {}),
+        "temporal_trend": ai_analysis.get("temporal_trend", {}),
+        "confidence_assessment": ai_analysis.get("confidence_assessment", {}),
+        "farmer_guidance": ai_analysis.get("farmer_guidance", {}),
+        "professional_technical_notes": ai_analysis.get("professional_technical_notes", {}),
+        "agronomist_notes": ai_analysis.get("agronomist_notes", {}),
+        "historical_context": ai_analysis.get("historical_context", {})
+    }
+    
+    # Add imagery context (RADAR vs Optical detection)
+    data_source = indices_data.get("data_source", "optical")
+    cloud_cover = indices_data.get("cloud_cover", 0)
+    
+    imagery_context = {
+        "data_source": data_source,
+        "cloud_cover_percent": cloud_cover,
+        "switched_to_radar": data_source == "sentinel1_radar",
+        "explanation": ""
+    }
+    
+    if data_source == "sentinel1_radar":
+        imagery_context["explanation"] = (
+            f"Due to cloud cover preventing optical satellite imagery, "
+            f"analysis switched to Sentinel-1 RADAR (Synthetic Aperture RADAR) which "
+            f"penetrates clouds to provide reliable vegetation assessment. "
+            f"The Radar Vegetation Index (RVI) is used instead of optical NDVI."
+        )
+        imagery_context["satellite_system"] = "Sentinel-1 (SAR)"
+        imagery_context["index_used"] = "RVI (Radar Vegetation Index)"
+    else:
+        imagery_context["explanation"] = f"Optical satellite imagery with {cloud_cover}% cloud cover."
+        imagery_context["satellite_system"] = "Sentinel-2 (Optical)"
+        imagery_context["index_used"] = "NDVI and related optical indices"
+    
+    report["imagery_context"] = imagery_context
+    
+    return report
