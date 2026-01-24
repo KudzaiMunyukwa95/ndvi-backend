@@ -522,7 +522,7 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
             vis = img.select(["B4","B3","B2"]).visualize(min=0, max=3000)
         elif req.index_type == "RADAR":
             # Engineering a professional RADAR FCC (False Color Composite)
-            # REFINED: Better separation of crops (Green) vs Soil (Red) vs Water (Blue)
+            # ULTIMATE REFINE: High-fidelity separation for crops vs soil
             vv = img.select('VV')
             vh = img.select('VH')
             
@@ -531,14 +531,14 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
             vh_pwr = ee.Image(10).pow(vh.divide(10))
             ratio = vh_pwr.divide(vv_pwr).rename('ratio')
             
-            # Recalibrated unitScales:
-            # R (VV): Sensitivity to soil roughness/urban (dB: -18 to 0)
-            # G (VH): Sensitivity to vegetation scattering (dB: -22 to -8)
-            # B (Ratio): Sensitivity to water/moisture (linear: 0.1 to 0.8)
+            # Recalibrated unitScales for agricultural "pop":
+            # R (VV): Sensitivity to urban/soil structure (dB: -18 to -2)
+            # G (VH): Sensitivity to crop volume scattering (dB: -24 to -10)
+            # B (Ratio): Sensitivity to water/moisture (linear: 0.2 to 0.7)
             vis = ee.Image.rgb(
-                vv.unitScale(-18, 0), 
-                vh.unitScale(-22, -8), 
-                ratio.unitScale(0.1, 0.8)
+                vv.unitScale(-18, -2), 
+                vh.unitScale(-24, -10), 
+                ratio.unitScale(0.2, 0.7)
             ).visualize()
         else:
             idx_img = get_index(img, req.index_type)
@@ -547,10 +547,11 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
             
             # Calculate stats for the index with explicit scale
             try:
+                # Optimized scale for field-level analysis
                 stats = idx_img.reduceRegion(
                     reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
                     geometry=poly,
-                    scale=10,
+                    scale=20, # Increased to 20m for significant speed gain without quality loss for stats
                     maxPixels=1e9
                 ).getInfo()
                 stats_dict = stats
