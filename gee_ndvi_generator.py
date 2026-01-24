@@ -365,6 +365,10 @@ def get_optimized_collection(polygon, start, end, limit_images=True):
     max_img = 15 if size > 50 else (20 if size > 20 else size)
     col = base.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold)).sort("CLOUDY_PIXEL_PERCENTAGE")
     if limit_images: col = col.limit(max_img)
+    
+    # Apply bicubic resampling to each image in the collection for a smoother "high-res" look
+    col = col.map(lambda img: img.resample('bicubic'))
+    
     final_size = col.size().getInfo()
     avg_cloud = calculate_collection_cloud_cover(col, polygon, start, end)
     return col, final_size, avg_cloud.getInfo() if avg_cloud else None
