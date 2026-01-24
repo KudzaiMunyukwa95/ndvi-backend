@@ -158,7 +158,8 @@ class TimeSeriesRequest(BaseModel):
     endDate: str
     crop: str = ""
     forceWinterDetector: bool = False
-    index_type: str = "NDVI"
+    index_type: str = "NDVI" # Default for backward compatibility
+    use_hybrid: bool = False # If true, returns multiple indices for advanced estimation
 
 class AgronomicRequest(BaseModel):
     field_name: str = "Unknown"
@@ -168,7 +169,9 @@ class AgronomicRequest(BaseModel):
     latitude: Union[float, str] = "Unknown"
     longitude: Union[float, str] = "Unknown"
     date_range: str = "Unknown"
+    date_range: str = "Unknown"
     ndvi_data: List[Dict[str, Any]] = []
+    savi_data: Optional[List[Dict[str, Any]]] = None
     rainfall_data: List[Dict[str, Any]] = []
     temperature_data: List[Dict[str, Any]] = []
     gdd_data: List[Dict[str, Any]] = []
@@ -435,8 +438,13 @@ def detect_tillage_replanting_events(ndvi_data, primary_emergence_date=None):
         return {"tillage_detected": True, "tillage_date": e['date'], "message": f"Tillage event detected around {format_date_for_display(e['date'])} (NDVI drop {e['before']:.2f} to {e['after']:.2f})."}
     return {"tillage_detected": False, "message": ""}
 
-def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainfall_data=None, coordinates=None, force_winter_detector=False):
-    logger.info(f"=== DETECTING EMERGENCE: {crop_type} ===")
+def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainfall_data=None, coordinates=None, force_winter_detector=False, use_savi_threshold=False):
+    logger.info(f"=== DETECTING EMERGENCE: {crop_type} (SAVI Mode: {use_savi_threshold}) ===")
+    
+    # Recalibrate Threshold for SAVI if requested
+    # SAVI is generally higher than NDVI on bare soil but lower at peak canopy.
+    # For emergence detection on bare soil, we use a slightly more conservative threshold of 0.22 for SAVI.
+    CURRENT_THRESHOLD = 0.22 if use_savi_threshold else EMERGENCE_THRESHOLD
     if crop_type.lower() == 'wheat':
         date, conf, meta = detect_wheat_winter_emergence(ndvi_data, coordinates, force_winter_detector)
         if date:
@@ -451,15 +459,15 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
     sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
     emergence_date, emergence_index = None, -1
     for i in range(len(sorted_ndvi) - 1):
-        if sorted_ndvi[i]['ndvi'] < EMERGENCE_THRESHOLD and sorted_ndvi[i+1]['ndvi'] >= EMERGENCE_THRESHOLD:
+        if sorted_ndvi[i]['ndvi'] < CURRENT_THRESHOLD and sorted_ndvi[i+1]['ndvi'] >= CURRENT_THRESHOLD:
             emergence_date, emergence_index = sorted_ndvi[i+1]['date'], i+1
             break
     if not emergence_date:
         fb = detect_significant_rise_fallback(sorted_ndvi)
         if fb: emergence_date, emergence_index = fb['date'], [n['date'] for n in sorted_ndvi].index(fb['date'])
     
-    if not emergence_date and sorted_ndvi and sorted_ndvi[0]['ndvi'] >= EMERGENCE_THRESHOLD:
-        high = [n['ndvi'] for n in sorted_ndvi if n['ndvi'] >= EMERGENCE_THRESHOLD]
+    if not emergence_date and sorted_ndvi and sorted_ndvi[0]['ndvi'] >= CURRENT_THRESHOLD:
+        high = [n['ndvi'] for n in sorted_ndvi if n['ndvi'] >= CURRENT_THRESHOLD]
         if len(high) >= len(sorted_ndvi) * 0.8:
             return {"emergenceDate": None, "preEstablished": True, "confidence": "high", "message": "Crop was already established.", "primary_emergence": False}
             
@@ -619,18 +627,38 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
         col, size, _ = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False, index_type=req.index_type)
         if not col or size == 0: raise Exception("No imagery")
         
-        def add_stats(img):
+        def add_all_stats(img):
             clipped = img.clip(poly)
-            val = get_index(clipped, req.index_type).reduceRegion(ee.Reducer.mean(), poly, 10).get(req.index_type)
-            return img.set('val', val, 'date', img.date().format('YYYY-MM-dd'))
+            # Fetch both NDVI and SAVI for hybrid estimation if requested
+            ndvi_val = get_index(clipped, "NDVI").reduceRegion(ee.Reducer.mean(), poly, 20).get("NDVI")
+            savi_val = get_index(clipped, "SAVI").reduceRegion(ee.Reducer.mean(), poly, 20).get("SAVI")
+            return img.set('ndvi', ndvi_val, 'savi', savi_val, 'date', img.date().format('YYYY-MM-dd'))
         
-        data = col.map(add_stats).aggregate_array('val').getInfo()
-        dates = col.map(add_stats).aggregate_array('date').getInfo()
-        series = [{"date": dates[i], "ndvi": data[i]} for i in range(len(dates)) if data[i] is not None]
+        if req.use_hybrid:
+            results = col.map(add_all_stats).select(['ndvi', 'savi', 'date']).getInfo()
+            series = []
+            for feat in results.get('features', []):
+                props = feat.get('properties', {})
+                if props.get('ndvi') is not None:
+                    series.append({
+                        "date": props['date'],
+                        "ndvi": max(0.0, min(1.0, float(props['ndvi']))),
+                        "savi": max(0.0, min(1.0, float(props['savi']))) if props.get('savi') is not None else None
+                    })
+        else:
+            def add_stats(img):
+                clipped = img.clip(poly)
+                val = get_index(clipped, req.index_type).reduceRegion(ee.Reducer.mean(), poly, 20).get(req.index_type)
+                return img.set('val', val, 'date', img.date().format('YYYY-MM-dd'))
+            
+            data = col.map(add_stats).aggregate_array('val').getInfo()
+            dates = col.map(add_stats).aggregate_array('date').getInfo()
+            series = [{"date": dates[i], "ndvi": max(0.0, min(1.0, float(data[i])))} for i in range(len(dates)) if data[i] is not None]
+        
         series.sort(key=lambda x: x['date'])
-        
         res = {"success": True, "time_series": series, "collection_size": size}
-        if req.index_type == "NDVI" and req.crop:
+        
+        if req.index_type == "NDVI" and req.crop and not req.use_hybrid:
             edate, conf, meta = detect_wheat_winter_emergence(series, req.coordinates, req.forceWinterDetector) if req.crop.lower() == 'wheat' else (None, None, {})
             if edate: res.update({"emergence_date": edate, "emergence_confidence": conf, **meta})
         return res
@@ -676,8 +704,17 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
             avg_max = sum(item["max"] for item in req.temperature_data) / len(req.temperature_data)
             temp_formatted = f"Avg min: {avg_min:.1f}°C, Avg max: {avg_max:.1f}°C"
         
-        # Detailed Emergence Detection
-        primary_res = detect_primary_emergence_and_planting(req.ndvi_data, req.crop, "Yes" if req.irrigated else "No", req.rainfall_data, req.coordinates, req.forceWinterDetector)
+        # Detailed Emergence Detection with Hybrid Index Support
+        # If savi_data exists, we use the SAVI-optimized detector for better soil noise rejection
+        primary_res = detect_primary_emergence_and_planting(
+            req.savi_data if req.savi_data else req.ndvi_data, 
+            req.crop, 
+            "Yes" if req.irrigated else "No", 
+            req.rainfall_data, 
+            req.coordinates, 
+            req.forceWinterDetector,
+            use_savi_threshold=(req.savi_data is not None)
+        )
         tillage_res = detect_tillage_replanting_events(req.ndvi_data, primary_res.get("emergenceDate"))
         
         planting_text = primary_res["message"]
