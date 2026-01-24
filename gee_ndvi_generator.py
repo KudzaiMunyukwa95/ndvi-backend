@@ -234,6 +234,13 @@ def get_index(image, index_type):
         ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI')
         config = INDEX_CONFIGS["NDWI"]
         return ndwi.where(ndwi.lt(config["range"][0]), config["range"][0]).where(ndwi.gt(config["range"][1]), config["range"][1])
+    elif index_type == "RADAR":
+        # Sentinel-1 VV and VH must be present
+        vv = image.select('VV')
+        vh = image.select('VH')
+        # RVI = 4 * VH / (VV + VH)
+        rvi = vh.multiply(4).divide(vv.add(vh)).rename('RADAR')
+        return rvi.where(rvi.lt(0), 0).where(rvi.gt(1), 1)
     return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
 
 def calculate_std_dev(values):
@@ -357,7 +364,20 @@ def calculate_collection_cloud_cover(collection, polygon, start, end):
         return collection.map(add_cloud).aggregate_mean('field_cloud')
     except: return None
 
-def get_optimized_collection(polygon, start, end, limit_images=True):
+def get_optimized_collection(polygon, start, end, limit_images=True, index_type="NDVI"):
+    if index_type == "RADAR":
+        base = ee.ImageCollection("COPERNICUS/S1_GRD")\
+                 .filterBounds(polygon)\
+                 .filterDate(start, end)\
+                 .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))\
+                 .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))\
+                 .filter(ee.Filter.eq('instrumentMode', 'IW'))
+        size = base.size().getInfo()
+        if size == 0: return None, 0, None
+        col = base.limit(10) if limit_images else base
+        final_size = col.size().getInfo()
+        return col, final_size, 0 # Cloud cover not applicable for RADAR
+        
     base = ee.ImageCollection("COPERNICUS/S2_HARMONIZED").filterBounds(polygon).filterDate(start, end)
     size = base.size().getInfo()
     if size == 0: return None, 0, None
@@ -478,32 +498,39 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
     
     def sync_logic():
         poly = ee.Geometry.Polygon(req.coordinates)
-        col, size, cloud = get_optimized_collection(poly, req.startDate, req.endDate)
-        if not col or size == 0: raise Exception("No imagery found")
+        col, size, cloud = get_optimized_collection(poly, req.startDate, req.endDate, index_type=req.index_type)
+        if not col or size == 0: raise Exception("No imagery found for path/date")
         first_image = col.first()
         image_date = first_image.date().format("YYYY-MM-dd").getInfo()
         image_time = first_image.date().format("YYYY-MM-dd HH:mm:ss").getInfo()
-        scene_cloud_pct = first_image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
-        satellite_name = first_image.get("SPACECRAFT_NAME").getInfo()
+        
+        # Safe property extraction
+        is_radar = req.index_type == "RADAR"
+        scene_cloud_pct = first_image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo() if not is_radar else 0
+        satellite_name = "Sentinel-1" if is_radar else first_image.get("SPACECRAFT_NAME").getInfo()
         
         img = col.median().clip(poly)
         stats_dict = {}
         
         if req.index_type == "RGB":
-            vis = img.select(["B4","B3","B2"]).visualize(min=0, max=3000)
+            vis = img.select(["B4","B3","B2"]).resample('bicubic').visualize(min=0, max=3000)
         else:
-            idx_img = get_index(img, req.index_type)
-            conf = INDEX_CONFIGS[req.index_type]
+            idx_img = get_index(img, req.index_type).resample('bicubic')
+            conf = INDEX_CONFIGS.get(req.index_type, INDEX_CONFIGS["NDVI"])
             vis = idx_img.visualize(min=conf["range"][0], max=conf["range"][1], palette=conf["palette"])
             
             # Calculate stats for the index
-            stats = idx_img.reduceRegion(
-                reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
-                geometry=poly,
-                scale=10,
-                maxPixels=1e9
-            ).getInfo()
-            stats_dict = stats
+            try:
+                stats = idx_img.reduceRegion(
+                    reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
+                    geometry=poly,
+                    scale=10,
+                    maxPixels=1e9
+                ).getInfo()
+                stats_dict = stats
+                logger.info(f"Stats for {req.index_type}: {stats_dict}")
+            except Exception as e:
+                logger.error(f"Stats Error: {e}")
 
         mid = ee.data.getMapId({"image": vis})
         tile_url = f"https://earthengine.googleapis.com/v1alpha/{mid['mapid']}/tiles/{{z}}/{{x}}/{{y}}"
@@ -518,11 +545,11 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
             "scene_cloud_percentage": scene_cloud_pct,
             "satellite": {
                 "name": satellite_name,
-                "sensor": "MSI",
-                "processing_level": "Level-2A",
+                "sensor": "SAR" if is_radar else "MSI",
+                "processing_level": "Level-1" if is_radar else "Level-2A",
                 "acquisition_time": image_time,
                 "resolution": "10m",
-                "platform": "Copernicus Sentinel-2"
+                "platform": "Copernicus Sentinel-1" if is_radar else "Copernicus Sentinel-2"
             }
         }
         
@@ -530,6 +557,9 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
             res["mean"] = stats_dict.get(req.index_type)
             res["min"] = stats_dict.get(f"{req.index_type}_min")
             res["max"] = stats_dict.get(f"{req.index_type}_max")
+            # Fallback for naming variations
+            if res["mean"] is None and len(stats_dict) == 1:
+                res["mean"] = list(stats_dict.values())[0]
             
         return res
 
@@ -656,10 +686,20 @@ async def advanced_report(req: AdvancedReportRequest, auth: bool = Depends(verif
     def sync_logic():
         poly = ee.Geometry.Polygon(req.coordinates["coordinates"] if isinstance(req.coordinates, dict) else req.coordinates)
         col, size, cloud = get_optimized_collection(poly, req.start_date, req.end_date, False)
+        if not col or size == 0:
+            return {"success": False, "message": "No imagery available for this field in the selected date range."}
+            
         latest = col.sort("system:time_start", False).first()
         idate = datetime.fromtimestamp(latest.get("system:time_start").getInfo()/1000).strftime("%Y-%m-%d")
         
-        indices = {idx: get_index(latest, idx).reduceRegion(ee.Reducer.mean(), poly, 20).get(idx).getInfo() for idx in ["NDVI","EVI","SAVI","NDMI","NDWI"]}
+        indices = {}
+        for idx in ["NDVI","EVI","SAVI","NDMI","NDWI"]:
+            try:
+                val = get_index(latest, idx).reduceRegion(ee.Reducer.mean(), poly, 20).get(idx).getInfo()
+                indices[idx] = val
+            except:
+                indices[idx] = 0
+                
         growth = analyze_growth_stage(req.crop, req.planting_date, idate)
         report = build_report_structure({"field_name":req.field_name,"crop":req.crop,"area":req.area}, growth, validate_indices(indices))
         ai = generate_ai_analysis(report)
