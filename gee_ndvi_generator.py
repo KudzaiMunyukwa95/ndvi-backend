@@ -728,16 +728,15 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
         if confidence != "high" and req.ndvi_data and len(req.ndvi_data) >= 10:
             if avg_cloud_cover is not None and avg_cloud_cover < 20: confidence = "high"
             
-        # OpenAI Prompting for Institutional-Grade Advisory
-        # We prompt the AI to explain the "Hybrid" verification in plain English for executives
+        # Grounded AI Advisory logic to prevent hallucinations
         if primary_res.get("no_planting_detected"):
-            prompt = f"Field: {req.field_name} - {req.crop}. Result: No planting seen. Note: Our system used a soil-corrected sensor (SAVI) to look through ground noise. Write a 2-3 sentence professional advising the farmer that NO PLANTING was seen."
+            prompt = f"Field: {req.field_name} - {req.crop}. Analysis: No vegetation signature consistent with planting detected. Note: Used soil-corrected satellite metrics. Write a 2-3 sentence technical advisory stating that no significant growth signals were found during this window."
         else:
-            prompt = f"Field: {req.field_name} - {req.crop}. Status: {planting_text}. Note: We verified emergence using a hybrid of standard and soil-corrected satellite sensors to bypass ground noise. Write 2-3 sentences of professional farming advice explaining that we've verified their progress."
+            prompt = f"Field: {req.field_name} - {req.crop}. Analysis: Emerging growth detected {planting_text}. Note: Cross-verified with soil-corrected satellite sensors at 20m resolution. Write 2-3 sentences of objective advisory explaining the detected growth window and recommending continued monitoring."
             
         ai_res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "Professional Institutional Ag-Advisor for the Masawara Portfolio. Use plain, encouraging English. Avoid technical jargon like SAVI or NDVI in the final output, refer to 'soil-corrected satellite metrics' if needed."},{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": "Professional Agricultural Technical Advisor. Provide objective, data-driven observations based on satellite analysis. Use plain English. Avoid technical acronyms like NDVI or SAVI, refer to 'satellite growth signatures' or 'soil-corrected metrics'."},{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=150
         )
