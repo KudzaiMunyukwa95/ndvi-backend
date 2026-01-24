@@ -635,15 +635,18 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
             return img.set('ndvi', ndvi_val, 'savi', savi_val, 'date', img.date().format('YYYY-MM-dd'))
         
         if req.use_hybrid:
-            results = col.map(add_all_stats).select(['ndvi', 'savi', 'date']).getInfo()
+            mapped_col = col.map(add_all_stats)
+            ndvis = mapped_col.aggregate_array('ndvi').getInfo()
+            savis = mapped_col.aggregate_array('savi').getInfo()
+            date_list = mapped_col.aggregate_array('date').getInfo()
+            
             series = []
-            for feat in results.get('features', []):
-                props = feat.get('properties', {})
-                if props.get('ndvi') is not None:
+            for i in range(len(date_list)):
+                if ndvis[i] is not None:
                     series.append({
-                        "date": props['date'],
-                        "ndvi": max(0.0, min(1.0, float(props['ndvi']))),
-                        "savi": max(0.0, min(1.0, float(props['savi']))) if props.get('savi') is not None else None
+                        "date": date_list[i],
+                        "ndvi": max(0.0, min(1.0, float(ndvis[i]))),
+                        "savi": max(0.0, min(1.0, float(savis[i]))) if savis[i] is not None else None
                     })
         else:
             def add_stats(img):
