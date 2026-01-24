@@ -577,7 +577,7 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
 
     def sync_logic():
         poly = ee.Geometry.Polygon(req.coordinates)
-        col, size, _ = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False)
+        col, size, _ = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False, index_type=req.index_type)
         if not col or size == 0: raise Exception("No imagery")
         
         def add_stats(img):
