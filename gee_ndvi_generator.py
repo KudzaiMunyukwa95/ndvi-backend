@@ -661,15 +661,27 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
         
         def add_all_stats(img):
             clipped = img.clip(poly)
-            # Fetch both NDVI and SAVI for hybrid estimation if requested
-            ndvi_val = get_index(clipped, "NDVI").reduceRegion(ee.Reducer.mean(), poly, 20).get("NDVI")
-            savi_val = get_index(clipped, "SAVI").reduceRegion(ee.Reducer.mean(), poly, 20).get("SAVI")
-            return img.set('ndvi', ndvi_val, 'savi', savi_val, 'date', img.date().format('YYYY-MM-dd'))
+            # Optimization: Fetch both NDVI and SAVI in a single reduction call
+            # This reduces GEE overhead by 50% for hybrid requests
+            hybrid_img = get_index(clipped, "NDVI").addBands(get_index(clipped, "SAVI"))
+            stats = hybrid_img.reduceRegion(ee.Reducer.mean(), poly, 20)
+            
+            return img.set({
+                'ndvi': stats.get('NDVI'),
+                'savi': stats.get('SAVI'),
+                'date': img.date().format('YYYY-MM-dd')
+            })
         
         if req.use_hybrid:
             mapped_col = col.map(add_all_stats)
-            ndvis = mapped_col.aggregate_array('ndvi').getInfo()
-            savis = mapped_col.aggregate_array('savi').getInfo()
+            # Batch fetch all data arrays to minimize getInfo() overhead
+            results = mapped_col.select(['ndvi', 'savi']).reduceColumns(
+                reducer=ee.Reducer.toList().repeat(2),
+                selectors=['ndvi', 'savi']
+            ).getInfo()
+            
+            ndvis = results['list'][0]
+            savis = results['list'][1]
             date_list = mapped_col.aggregate_array('date').getInfo()
             
             series = []
