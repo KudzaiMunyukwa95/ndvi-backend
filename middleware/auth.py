@@ -1,52 +1,40 @@
 """
-🔒 Authentication Middleware for Flask API
+🔒 Authentication Middleware for FastAPI
 """
 
-from functools import wraps
-from flask import request, jsonify
+from fastapi import Header, HTTPException, status
 import os
 import logging
 
 logger = logging.getLogger(__name__)
 
-
-def require_auth(f):
-    """Decorator to require authentication token for route access"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        
-        if not auth_header:
-            logger.warning('Unauthorized access - Missing authorization header')
-            return jsonify({
-                'success': False,
-                'error': 'Unauthorized',
-                'message': 'Missing authorization header'
-            }), 401
-        
-        token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else auth_header
-        admin_token = os.environ.get('ADMIN_TOKEN')
-        
-        if not admin_token:
-            logger.error('⚠️ CRITICAL: ADMIN_TOKEN not configured')
-            return jsonify({
-                'success': False,
-                'error': 'Server configuration error'
-            }), 500
-        
-        if token != admin_token:
-            logger.warning(f'Invalid token from IP: {request.remote_addr}')
-            return jsonify({
-                'success': False,
-                'error': 'Unauthorized',
-                'message': 'Invalid authentication token'
-            }), 401
-        
-        logger.info(f'Authenticated request to {request.path}')
-        return f(*args, **kwargs)
+async def verify_auth(authorization: str = Header(None)):
+    """FastAPI dependency to require authentication token"""
+    if not authorization:
+        logger.warning('Unauthorized access - Missing authorization header')
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authorization header"
+        )
     
-    return decorated_function
-
+    token = authorization.replace('Bearer ', '') if authorization.startswith('Bearer ') else authorization
+    admin_token = os.environ.get('ADMIN_TOKEN')
+    
+    if not admin_token:
+        logger.error('⚠️ CRITICAL: ADMIN_TOKEN not configured')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server configuration error"
+        )
+    
+    if token != admin_token:
+        logger.warning('Invalid token provided')
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token"
+        )
+    
+    return True
 
 def log_authentication_status():
     """Log authentication status on startup"""
@@ -55,3 +43,4 @@ def log_authentication_status():
         logger.info('🔒 Authentication: ENABLED')
     else:
         logger.error('⚠️ Authentication: DISABLED - ADMIN_TOKEN not set!')
+
