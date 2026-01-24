@@ -72,9 +72,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize OpenAI client
-openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
 # In-memory caching
 cache = TTLCache(maxsize=1000, ttl=3600)
 cache_lock = threading.Lock()
@@ -810,7 +807,7 @@ async def advanced_report(req: AdvancedReportRequest, auth: bool = Depends(verif
         report = build_report_structure({"field_name":req.field_name,"crop":req.crop,"area":req.area}, growth, v_indices)
         report["observation_metadata"] = obs_meta
         
-        ai = generate_ai_analysis(report)
+        ai = None # AI analysis deprecated for speed and cost
         final = build_report_structure({"field_name":req.field_name,"crop":req.crop,"area":req.area}, growth, v_indices, ai)
         final["observation_metadata"] = obs_meta
         
