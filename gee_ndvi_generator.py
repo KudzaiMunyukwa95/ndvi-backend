@@ -728,15 +728,16 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
         if confidence != "high" and req.ndvi_data and len(req.ndvi_data) >= 10:
             if avg_cloud_cover is not None and avg_cloud_cover < 20: confidence = "high"
             
-        # OpenAI Prompting
+        # OpenAI Prompting for Institutional-Grade Advisory
+        # We prompt the AI to explain the "Hybrid" verification in plain English for executives
         if primary_res.get("no_planting_detected"):
-            prompt = f"Field: {req.field_name} - {req.crop}. Result: {planting_text}. Write a 2-3 sentence professional advising the farmer that NO PLANTING was seen."
+            prompt = f"Field: {req.field_name} - {req.crop}. Result: No planting seen. Note: Our system used a soil-corrected sensor (SAVI) to look through ground noise. Write a 2-3 sentence professional advising the farmer that NO PLANTING was seen."
         else:
-            prompt = f"Field: {req.field_name} - {req.crop}. Status: {planting_text}. NDVI: {ndvi_formatted[:200]}. Rainfall: {rainfall_formatted[:100]}. Write 2-3 sentences of farming advice."
+            prompt = f"Field: {req.field_name} - {req.crop}. Status: {planting_text}. Note: We verified emergence using a hybrid of standard and soil-corrected satellite sensors to bypass ground noise. Write 2-3 sentences of professional farming advice explaining that we've verified their progress."
             
         ai_res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "Professional Farm Advisor"},{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": "Professional Institutional Ag-Advisor for the Masawara Portfolio. Use plain, encouraging English. Avoid technical jargon like SAVI or NDVI in the final output, refer to 'soil-corrected satellite metrics' if needed."},{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=150
         )
