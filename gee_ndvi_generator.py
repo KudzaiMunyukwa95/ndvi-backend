@@ -381,8 +381,6 @@ def get_optimized_collection(polygon, start, end, limit_images=True, index_type=
         size = base.size().getInfo()
         if size == 0: return None, 0, None
         col = base.limit(10) if limit_images else base
-        # Apply bicubic resampling to Sentinel-1 for smoother RADAR look
-        col = col.map(lambda img: img.resample('bicubic'))
         final_size = col.size().getInfo()
         return col, final_size, 0 # Cloud cover not applicable for RADAR
         
@@ -394,8 +392,7 @@ def get_optimized_collection(polygon, start, end, limit_images=True, index_type=
     col = base.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold)).sort("CLOUDY_PIXEL_PERCENTAGE")
     if limit_images: col = col.limit(max_img)
     
-    # Apply bicubic resampling to each image in the collection for a smoother "high-res" look
-    col = col.map(lambda img: img.resample('bicubic'))
+    # Removed collection-level resampling to ensure tile engine stability
     
     final_size = col.size().getInfo()
     avg_cloud = calculate_collection_cloud_cover(col, polygon, start, end)
@@ -522,7 +519,7 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
         stats_dict = {}
         
         if req.index_type == "RGB":
-            vis = img.select(["B4","B3","B2"]).resample('bicubic').visualize(min=0, max=3000)
+            vis = img.select(["B4","B3","B2"]).visualize(min=0, max=3000)
         elif req.index_type == "RADAR":
             # Engineering a professional RADAR FCC (False Color Composite)
             # R: VV (dB), G: VH (dB), B: Ratio VH/VV (linear)
@@ -545,7 +542,7 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
                 ratio.unitScale(0, 0.5)
             ).visualize()
         else:
-            idx_img = get_index(img, req.index_type).resample('bicubic')
+            idx_img = get_index(img, req.index_type)
             conf = INDEX_CONFIGS.get(req.index_type, INDEX_CONFIGS["NDVI"])
             vis = idx_img.visualize(min=conf["range"][0], max=conf["range"][1], palette=conf["palette"])
             
