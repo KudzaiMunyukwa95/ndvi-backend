@@ -375,6 +375,8 @@ def get_optimized_collection(polygon, start, end, limit_images=True, index_type=
         size = base.size().getInfo()
         if size == 0: return None, 0, None
         col = base.limit(10) if limit_images else base
+        # Apply bicubic resampling to Sentinel-1 for smoother RADAR look
+        col = col.map(lambda img: img.resample('bicubic'))
         final_size = col.size().getInfo()
         return col, final_size, 0 # Cloud cover not applicable for RADAR
         
@@ -509,18 +511,20 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
         scene_cloud_pct = first_image.get("CLOUDY_PIXEL_PERCENTAGE").getInfo() if not is_radar else 0
         satellite_name = "Sentinel-1" if is_radar else first_image.get("SPACECRAFT_NAME").getInfo()
         
+        
         img = col.median().clip(poly)
         stats_dict = {}
         
         if req.index_type == "RGB":
-            vis = img.select(["B4","B3","B2"]).resample('bicubic').visualize(min=0, max=3000)
+            vis = img.select(["B4","B3","B2"]).visualize(min=0, max=3000)
         else:
-            idx_img = get_index(img, req.index_type).resample('bicubic')
+            idx_img = get_index(img, req.index_type)
             conf = INDEX_CONFIGS.get(req.index_type, INDEX_CONFIGS["NDVI"])
             vis = idx_img.visualize(min=conf["range"][0], max=conf["range"][1], palette=conf["palette"])
             
             # Calculate stats for the index
             try:
+                # Use mean scale of 10m
                 stats = idx_img.reduceRegion(
                     reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
                     geometry=poly,
@@ -554,12 +558,23 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
         }
         
         if req.index_type != "RGB":
-            res["mean"] = stats_dict.get(req.index_type)
+            # Combined reducer results in index_mean, index_min, index_max
+            res["mean"] = stats_dict.get(f"{req.index_type}_mean")
             res["min"] = stats_dict.get(f"{req.index_type}_min")
             res["max"] = stats_dict.get(f"{req.index_type}_max")
-            # Fallback for naming variations
-            if res["mean"] is None and len(stats_dict) == 1:
-                res["mean"] = list(stats_dict.values())[0]
+            
+            # Fallback if names are different or combined was simpler
+            if res["mean"] is None:
+                res["mean"] = stats_dict.get(req.index_type)
+            if res["min"] is None:
+                res["min"] = stats_dict.get("min")
+            if res["max"] is None:
+                res["max"] = stats_dict.get("max")
+            
+            # Final fallback if null
+            if res["mean"] is None and len(stats_dict) > 0:
+                # If only one or a few keys exist, try to grab anything resembling a value
+                res["mean"] = next(iter(stats_dict.values()))
             
         return res
 
@@ -701,9 +716,25 @@ async def advanced_report(req: AdvancedReportRequest, auth: bool = Depends(verif
                 indices[idx] = 0
                 
         growth = analyze_growth_stage(req.crop, req.planting_date, idate)
-        report = build_report_structure({"field_name":req.field_name,"crop":req.crop,"area":req.area}, growth, validate_indices(indices))
+        
+        # Add rich observation metadata for the PDF
+        obs_meta = {
+            "satellite_observation_date": idate,
+            "date_range_start": req.start_date,
+            "date_range_end": req.end_date,
+            "data_source": "Sentinel-2 L2A (Multispectral)"
+        }
+        
+        v_indices = validate_indices(indices)
+        v_indices["cloud_cover"] = cloud if cloud is not None else 0
+        
+        report = build_report_structure({"field_name":req.field_name,"crop":req.crop,"area":req.area}, growth, v_indices)
+        report["observation_metadata"] = obs_meta
+        
         ai = generate_ai_analysis(report)
-        final = build_report_structure({"field_name":req.field_name,"crop":req.crop,"area":req.area}, growth, validate_indices(indices), ai)
+        final = build_report_structure({"field_name":req.field_name,"crop":req.crop,"area":req.area}, growth, v_indices, ai)
+        final["observation_metadata"] = obs_meta
+        
         pdf = generate_pdf_report(final)
         return {"success": True, "report": final, "pdf": {"base64": base64.b64encode(pdf.getvalue()).decode('utf-8')}}
 
