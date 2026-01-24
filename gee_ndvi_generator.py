@@ -28,12 +28,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from cachetools import TTLCache
 import threading
-from openai import OpenAI
+# Removed OpenAI dependency to save tokens and improve performance
 
 # Import middleware and services
 from middleware.auth import verify_auth, log_authentication_status
 from services.report_service import analyze_growth_stage, build_report_structure, validate_indices
-from services.openai_client import generate_ai_analysis
+# from services.openai_client import generate_ai_analysis
 from services.pdf_service import generate_pdf_report
 from core.sentinel1_core import get_radar_visualization_url
 
@@ -757,22 +757,8 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
         if confidence != "high" and req.ndvi_data and len(req.ndvi_data) >= 10:
             if avg_cloud_cover is not None and avg_cloud_cover < 20: confidence = "high"
             
-        # Restored simple prompt for speed and clarity
-        if primary_res.get("no_planting_detected"):
-            prompt = f"Field: {req.field_name} - {req.crop}. Result: No growth signature consistent with planting detected. Provide a 2-sentence technical observation stating that no significant emergence was found."
-        else:
-            prompt = f"Field: {req.field_name} - {req.crop}. Result: {planting_text}. Provide 2 sentences of professional observation regarding this growth window and recommending continued monitoring."
-            
-        ai_res = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "Professional Agricultural Advisor. Provide objective, data-driven observations. Use plain English. Avoid all technical acronyms."},{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=100
-        )
-        
         return {
             "success": True,
-            "insight": ai_res.choices[0].message.content.strip(),
             "confidence_level": confidence,
             "tillage_detected": tillage_res["tillage_detected"],
             "primary_emergence_detected": primary_res.get("primary_emergence", False),
