@@ -440,16 +440,15 @@ def detect_tillage_replanting_events(ndvi_data, primary_emergence_date=None):
 
 def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainfall_data=None, coordinates=None, force_winter_detector=False, savi_data=None):
     """
-    Smart Engine: Uses standard NDVI for terminal reporting logic (the 0.2 threshold) 
-    but cross-verifies with SAVI (Soil-Modified) to filter out background ground noise.
+    Simplified Engine: Focuses exclusively on the familiar NDVI 0.2 threshold.
+    Removed hybrid complexity to ensure maximum speed and ease of explanation.
     """
-    logger.info(f"=== SMART ENGINE DETECTING EMERGENCE: {crop_type} ===")
+    logger.info(f"=== RESTORING NDVI SIMPLICITY: {crop_type} ===")
     
     # 1. Normalizing Data
     sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
-    sorted_savi = sorted(savi_data, key=lambda x: x['date']) if savi_data else None
     
-    # 2. Winter Wheat Handling (Proprietary algorithm)
+    # 2. Winter Wheat Handling
     if crop_type.lower() == 'wheat':
         date, conf, meta = detect_wheat_winter_emergence(ndvi_data, coordinates, force_winter_detector)
         if date:
@@ -461,44 +460,28 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
             res.update(meta)
             return res
 
-    # 3. Hybrid Verification Loop
+    # 3. Simple NDVI Emergence Detection
     emergence_date = None
     for i in range(len(sorted_ndvi) - 1):
-        # Trigger: NDVI crosses the familiar 0.2 threshold
         if sorted_ndvi[i]['ndvi'] < 0.2 and sorted_ndvi[i+1]['ndvi'] >= 0.2:
-            current_date = sorted_ndvi[i+1]['date']
-            
-            # Validation: Cross-check with Soil-Adjusted Index (SAVI) if available
-            if sorted_savi:
-                matching_savi = next((s for s in sorted_savi if s['date'] == current_date), None)
-                if matching_savi and matching_savi['savi'] < 0.16:
-                    logger.info(f"Filtered false positive at {current_date}: NDVI {sorted_ndvi[i+1]['ndvi']:.2f} vs SAVI {matching_savi['savi']:.2f} (Soil Noise)")
-                    continue # Silent Filter: NDVI says 0.2, but SAVI says it's just dirt noise.
-            
-            emergence_date = current_date
+            emergence_date = sorted_ndvi[i+1]['date']
             break
             
-    # 4. Fallback: Significant Rise Logic (for cleaner signals that don't hit 0.2 yet)
+    # 4. Fallback: Significant Rise Logic
     if not emergence_date:
         fb = detect_significant_rise_fallback(sorted_ndvi)
-        if fb: 
-            emergence_date = fb['date']
-            # Again, verify with SAVI if possible
-            if sorted_savi:
-                matching_savi = next((s for s in sorted_savi if s['date'] == emergence_date), None)
-                if matching_savi and matching_savi['savi'] < 0.14:
-                    emergence_date = None # Reject fallback if SAVI is too low
+        if fb: emergence_date = fb['date']
 
     # 5. Established Crop Handling
-    if not emergence_date and sorted_ndvi and sorted_ndvi[0]['ndvi'] >= 0.4:
-        return {"emergenceDate": None, "preEstablished": True, "confidence": "high", "message": "Crop was already established before analysis started.", "primary_emergence": False}
+    if not emergence_date and sorted_ndvi and sorted_ndvi[0]['ndvi'] >= 0.35:
+        return {"emergenceDate": None, "preEstablished": True, "confidence": "high", "message": "Field already shows established vegetation signatures.", "primary_emergence": False}
             
     # 6. Absence Detection
     if not emergence_date:
         if irrigated == "No" and rainfall_data:
             rf = detect_rainfall_without_emergence(ndvi_data, rainfall_data)
             if rf: return {"emergenceDate": None, "confidence": "medium", "message": rf['message'], "no_planting_detected": True}
-        return {"emergenceDate": None, "confidence": "high", "message": "Growth signature not found within the selected period.", "no_planting_detected": True}
+        return {"emergenceDate": None, "confidence": "high", "message": "No significant growth signature detected within this window.", "no_planting_detected": True}
         
     # 7. Final Response Mapping
     win = EMERGENCE_WINDOWS.get(crop_type, (6, 12))
@@ -510,7 +493,7 @@ def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainf
         "emergenceDate": emergence_date, 
         "plantingWindowStart": p_start, 
         "plantingWindowEnd": p_end, 
-        "confidence": "high" if len(sorted_ndvi) > 8 else "medium", 
+        "confidence": "high" if len(sorted_ndvi) > 6 else "medium", 
         "message": msg, 
         "primary_emergence": True
     }
@@ -753,16 +736,16 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
         
         # Detailed Emergence Detection with Hybrid Index Support
         # If savi_data exists, we use the SAVI-optimized detector for better soil noise rejection
-        # Scientific Hybrid Refinement:
-        # We always display NDVI (term) to the user, but we use SAVI for validation.
+        # Simplified Single-Index Insight:
+        # Reverted complexity for maximum speed and simplicity. 
+        # Focuses exclusively on NDVI at 0.2.
         primary_res = detect_primary_emergence_and_planting(
             req.ndvi_data, 
             req.crop, 
             "Yes" if req.irrigated else "No", 
             req.rainfall_data, 
             req.coordinates, 
-            req.forceWinterDetector,
-            savi_data=req.savi_data
+            req.forceWinterDetector
         )
         tillage_res = detect_tillage_replanting_events(req.ndvi_data, primary_res.get("emergenceDate"))
         
@@ -774,17 +757,17 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
         if confidence != "high" and req.ndvi_data and len(req.ndvi_data) >= 10:
             if avg_cloud_cover is not None and avg_cloud_cover < 20: confidence = "high"
             
-        # Grounded AI Advisory logic to prevent hallucinations
+        # Restored simple prompt for speed and clarity
         if primary_res.get("no_planting_detected"):
-            prompt = f"Field: {req.field_name} - {req.crop}. Analysis: No vegetation signature consistent with planting detected. Note: Used soil-corrected satellite metrics. Write a 2-3 sentence technical advisory stating that no significant growth signals were found during this window."
+            prompt = f"Field: {req.field_name} - {req.crop}. Result: No growth signature consistent with planting detected. Provide a 2-sentence technical observation stating that no significant emergence was found."
         else:
-            prompt = f"Field: {req.field_name} - {req.crop}. Analysis: Emerging growth detected {planting_text}. Note: Cross-verified with soil-corrected satellite sensors at 20m resolution. Write 2-3 sentences of objective advisory explaining the detected growth window and recommending continued monitoring."
+            prompt = f"Field: {req.field_name} - {req.crop}. Result: {planting_text}. Provide 2 sentences of professional observation regarding this growth window and recommending continued monitoring."
             
         ai_res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "Professional Agricultural Technical Advisor. Provide objective, data-driven observations based on satellite analysis. Use plain English. Avoid technical acronyms like NDVI or SAVI, refer to 'satellite growth signatures' or 'soil-corrected metrics'."},{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": "Professional Agricultural Advisor. Provide objective, data-driven observations. Use plain English. Avoid all technical acronyms."},{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=150
+            max_tokens=100
         )
         
         return {
