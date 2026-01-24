@@ -221,18 +221,18 @@ def get_cache_key(coords, start_date, end_date, endpoint_type, index_type="NDVI"
 def get_index(image, index_type):
     if index_type == "NDVI":
         ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
-        return ndvi.where(ndvi.lt(0), 0)
+        return ndvi.where(ndvi.lt(0), 0).where(ndvi.gt(1), 1)
     elif index_type == "EVI":
         nir = image.select('B8').divide(10000)
         red = image.select('B4').divide(10000)
         blue = image.select('B2').divide(10000)
         evi = image.expression('2.5 * ((NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1))', {'NIR': nir, 'RED': red, 'BLUE': blue}).rename('EVI')
-        return evi.where(evi.gt(1), 1).where(evi.lt(0), 0)
+        return evi.where(evi.lt(0), 0).where(evi.gt(1), 1)
     elif index_type == "SAVI":
         nir = image.select('B8').divide(10000)
         red = image.select('B4').divide(10000)
         savi = image.expression('((NIR - RED) * (1 + L)) / (NIR + RED + L)', {'NIR': nir, 'RED': red, 'L': 0.5}).rename('SAVI')
-        return savi.where(savi.lt(0), 0)
+        return savi.where(savi.lt(0), 0).where(savi.gt(1), 1)
     elif index_type == "NDMI":
         ndmi = image.normalizedDifference(['B8', 'B11']).rename('NDMI')
         return ndmi.where(ndmi.lt(0), 0).where(ndmi.gt(1), 1)
@@ -522,11 +522,7 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
             vis = img.select(["B4","B3","B2"]).visualize(min=0, max=3000)
         elif req.index_type == "RADAR":
             # Engineering a professional RADAR FCC (False Color Composite)
-            # R: VV (dB), G: VH (dB), B: Ratio VH/VV (linear)
-            # This combination helps relate to physical features:
-            # - Soil/Urban (high VV) -> Reddish
-            # - Vegetation (high VH scattering) -> Greenish/Yellow
-            # - Water/Smooth (low scattering) -> Blue/Dark
+            # REFINED: Better separation of crops (Green) vs Soil (Red) vs Water (Blue)
             vv = img.select('VV')
             vh = img.select('VH')
             
@@ -535,11 +531,14 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
             vh_pwr = ee.Image(10).pow(vh.divide(10))
             ratio = vh_pwr.divide(vv_pwr).rename('ratio')
             
-            # UnitScale dB ranges to [0, 1] for visualization
+            # Recalibrated unitScales:
+            # R (VV): Sensitivity to soil roughness/urban (dB: -18 to 0)
+            # G (VH): Sensitivity to vegetation scattering (dB: -22 to -8)
+            # B (Ratio): Sensitivity to water/moisture (linear: 0.1 to 0.8)
             vis = ee.Image.rgb(
-                vv.unitScale(-20, 0), 
-                vh.unitScale(-30, -5), 
-                ratio.unitScale(0, 0.5)
+                vv.unitScale(-18, 0), 
+                vh.unitScale(-22, -8), 
+                ratio.unitScale(0.1, 0.8)
             ).visualize()
         else:
             idx_img = get_index(img, req.index_type)
