@@ -3,7 +3,6 @@ uvicorn
 pydantic
 python-multipart
 earthengine-api
-openai>=1.0.0
 python-dotenv
 cachetools
 geohash2
