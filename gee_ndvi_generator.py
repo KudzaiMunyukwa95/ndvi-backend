@@ -438,50 +438,82 @@ def detect_tillage_replanting_events(ndvi_data, primary_emergence_date=None):
         return {"tillage_detected": True, "tillage_date": e['date'], "message": f"Tillage event detected around {format_date_for_display(e['date'])} (NDVI drop {e['before']:.2f} to {e['after']:.2f})."}
     return {"tillage_detected": False, "message": ""}
 
-def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainfall_data=None, coordinates=None, force_winter_detector=False, use_savi_threshold=False):
-    logger.info(f"=== DETECTING EMERGENCE: {crop_type} (SAVI Mode: {use_savi_threshold}) ===")
+def detect_primary_emergence_and_planting(ndvi_data, crop_type, irrigated, rainfall_data=None, coordinates=None, force_winter_detector=False, savi_data=None):
+    """
+    Smart Engine: Uses standard NDVI for terminal reporting logic (the 0.2 threshold) 
+    but cross-verifies with SAVI (Soil-Modified) to filter out background ground noise.
+    """
+    logger.info(f"=== SMART ENGINE DETECTING EMERGENCE: {crop_type} ===")
     
-    # Recalibrate Threshold for SAVI if requested
-    # SAVI is generally higher than NDVI on bare soil but lower at peak canopy.
-    # For emergence detection on bare soil, we use a slightly more conservative threshold of 0.22 for SAVI.
-    CURRENT_THRESHOLD = 0.22 if use_savi_threshold else EMERGENCE_THRESHOLD
+    # 1. Normalizing Data
+    sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
+    sorted_savi = sorted(savi_data, key=lambda x: x['date']) if savi_data else None
+    
+    # 2. Winter Wheat Handling (Proprietary algorithm)
     if crop_type.lower() == 'wheat':
         date, conf, meta = detect_wheat_winter_emergence(ndvi_data, coordinates, force_winter_detector)
         if date:
-            win = EMERGENCE_WINDOWS.get('Wheat', DEFAULT_EMERGENCE_WINDOW)
+            win = EMERGENCE_WINDOWS.get('Wheat', (14, 21))
             p_end = (datetime.strptime(date, '%Y-%m-%d') - timedelta(days=win[0])).strftime('%Y-%m-%d')
             p_start = (datetime.strptime(date, '%Y-%m-%d') - timedelta(days=win[1])).strftime('%Y-%m-%d')
-            msg = f"Winter wheat emergence detected around {format_date_for_display(date)}, indicating planting between {format_date_for_display(p_start)} and {format_date_for_display(p_end)}."
-            res = {"emergenceDate": date, "plantingWindowStart": p_start, "plantingWindowEnd": p_end, "confidence": conf, "message": msg, "primary_emergence": True, "detection_method": "wheat_winter_detector"}
+            msg = f"Emergence detected {format_date_for_display(date)}, indicating planting between {format_date_for_display(p_start)} and {format_date_for_display(p_end)}."
+            res = {"emergenceDate": date, "plantingWindowStart": p_start, "plantingWindowEnd": p_end, "confidence": conf, "message": msg, "primary_emergence": True, "detection_method": "winter_detector"}
             res.update(meta)
             return res
-            
-    sorted_ndvi = sorted(ndvi_data, key=lambda x: x['date'])
-    emergence_date, emergence_index = None, -1
+
+    # 3. Hybrid Verification Loop
+    emergence_date = None
     for i in range(len(sorted_ndvi) - 1):
-        if sorted_ndvi[i]['ndvi'] < CURRENT_THRESHOLD and sorted_ndvi[i+1]['ndvi'] >= CURRENT_THRESHOLD:
-            emergence_date, emergence_index = sorted_ndvi[i+1]['date'], i+1
+        # Trigger: NDVI crosses the familiar 0.2 threshold
+        if sorted_ndvi[i]['ndvi'] < 0.2 and sorted_ndvi[i+1]['ndvi'] >= 0.2:
+            current_date = sorted_ndvi[i+1]['date']
+            
+            # Validation: Cross-check with Soil-Adjusted Index (SAVI) if available
+            if sorted_savi:
+                matching_savi = next((s for s in sorted_savi if s['date'] == current_date), None)
+                if matching_savi and matching_savi['savi'] < 0.16:
+                    logger.info(f"Filtered false positive at {current_date}: NDVI {sorted_ndvi[i+1]['ndvi']:.2f} vs SAVI {matching_savi['savi']:.2f} (Soil Noise)")
+                    continue # Silent Filter: NDVI says 0.2, but SAVI says it's just dirt noise.
+            
+            emergence_date = current_date
             break
+            
+    # 4. Fallback: Significant Rise Logic (for cleaner signals that don't hit 0.2 yet)
     if not emergence_date:
         fb = detect_significant_rise_fallback(sorted_ndvi)
-        if fb: emergence_date, emergence_index = fb['date'], [n['date'] for n in sorted_ndvi].index(fb['date'])
-    
-    if not emergence_date and sorted_ndvi and sorted_ndvi[0]['ndvi'] >= CURRENT_THRESHOLD:
-        high = [n['ndvi'] for n in sorted_ndvi if n['ndvi'] >= CURRENT_THRESHOLD]
-        if len(high) >= len(sorted_ndvi) * 0.8:
-            return {"emergenceDate": None, "preEstablished": True, "confidence": "high", "message": "Crop was already established.", "primary_emergence": False}
+        if fb: 
+            emergence_date = fb['date']
+            # Again, verify with SAVI if possible
+            if sorted_savi:
+                matching_savi = next((s for s in sorted_savi if s['date'] == emergence_date), None)
+                if matching_savi and matching_savi['savi'] < 0.14:
+                    emergence_date = None # Reject fallback if SAVI is too low
+
+    # 5. Established Crop Handling
+    if not emergence_date and sorted_ndvi and sorted_ndvi[0]['ndvi'] >= 0.4:
+        return {"emergenceDate": None, "preEstablished": True, "confidence": "high", "message": "Crop was already established before analysis started.", "primary_emergence": False}
             
+    # 6. Absence Detection
     if not emergence_date:
         if irrigated == "No" and rainfall_data:
             rf = detect_rainfall_without_emergence(ndvi_data, rainfall_data)
-            if rf: return {"emergenceDate": None, "confidence": "medium", "message": rf['message'], "no_planting_detected": True, "primary_emergence": False}
-        return {"emergenceDate": None, "confidence": "high", "message": "No planting detected.", "no_planting_detected": True, "primary_emergence": False}
+            if rf: return {"emergenceDate": None, "confidence": "medium", "message": rf['message'], "no_planting_detected": True}
+        return {"emergenceDate": None, "confidence": "high", "message": "Growth signature not found within the selected period.", "no_planting_detected": True}
         
-    win = EMERGENCE_WINDOWS.get(crop_type, DEFAULT_EMERGENCE_WINDOW)
+    # 7. Final Response Mapping
+    win = EMERGENCE_WINDOWS.get(crop_type, (6, 12))
     p_end = (datetime.strptime(emergence_date, '%Y-%m-%d') - timedelta(days=win[0])).strftime('%Y-%m-%d')
     p_start = (datetime.strptime(emergence_date, '%Y-%m-%d') - timedelta(days=win[1])).strftime('%Y-%m-%d')
-    msg = f"Emergence detected around {format_date_for_display(emergence_date)}, indicating planting between {format_date_for_display(p_start)} and {format_date_for_display(p_end)}."
-    return {"emergenceDate": emergence_date, "plantingWindowStart": p_start, "plantingWindowEnd": p_end, "confidence": "medium" if len(sorted_ndvi) < 6 else "high", "message": msg, "primary_emergence": True}
+    msg = f"Emergence signature detected {format_date_for_display(emergence_date)}, indicating planting between {format_date_for_display(p_start)} and {format_date_for_display(p_end)}."
+    
+    return {
+        "emergenceDate": emergence_date, 
+        "plantingWindowStart": p_start, 
+        "plantingWindowEnd": p_end, 
+        "confidence": "high" if len(sorted_ndvi) > 8 else "medium", 
+        "message": msg, 
+        "primary_emergence": True
+    }
 
 
 # --- FastAPI Async Handlers ---
@@ -709,14 +741,16 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
         
         # Detailed Emergence Detection with Hybrid Index Support
         # If savi_data exists, we use the SAVI-optimized detector for better soil noise rejection
+        # Scientific Hybrid Refinement:
+        # We always display NDVI (term) to the user, but we use SAVI for validation.
         primary_res = detect_primary_emergence_and_planting(
-            req.savi_data if req.savi_data else req.ndvi_data, 
+            req.ndvi_data, 
             req.crop, 
             "Yes" if req.irrigated else "No", 
             req.rainfall_data, 
             req.coordinates, 
             req.forceWinterDetector,
-            use_savi_threshold=(req.savi_data is not None)
+            savi_data=req.savi_data
         )
         tillage_res = detect_tillage_replanting_events(req.ndvi_data, primary_res.get("emergenceDate"))
         
