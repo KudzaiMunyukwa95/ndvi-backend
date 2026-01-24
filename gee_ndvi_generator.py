@@ -99,14 +99,19 @@ INDEX_CONFIGS = {
         "explanation": "Soil-adjusted vegetation scale: red = sparse/stressed vegetation, yellow = moderate growth, green = healthy dense canopy."
     },
     "NDMI": {
-        "range": [-0.2, 0.6],
+        "range": [0, 1],
         "palette": ["#fdae61", "#ffffbf", "#a6d96a", "#1a9850"],
         "explanation": "Canopy moisture index: yellow = dry canopy, light green = moderate moisture, dark green = moist/saturated canopy."
     },
     "NDWI": {
-        "range": [0.05, 0.4],
+        "range": [0, 1],
         "palette": ["#fff7bc", "#c7e9b4", "#7fcdbb", "#41b6c4", "#1d91c0", "#0c2c84"],
         "explanation": "Water detection index: yellow/green = dry or vegetated areas, blue = water bodies or very high moisture."
+    },
+    "RADAR": {
+        "range": [0, 1],
+        "palette": ["#a50026", "#f46d43", "#fee08b", "#a6d96a", "#1a9850"],
+        "explanation": "Radar Vegetation Index (RVI): measures crop structure and biomass independently of cloud cover."
     },
     "RGB": {
         "range": [0, 255],
@@ -229,17 +234,18 @@ def get_index(image, index_type):
         savi = image.expression('((NIR - RED) * (1 + L)) / (NIR + RED + L)', {'NIR': nir, 'RED': red, 'L': 0.5}).rename('SAVI')
         return savi.where(savi.lt(0), 0)
     elif index_type == "NDMI":
-        return image.normalizedDifference(['B8', 'B11']).rename('NDMI')
+        ndmi = image.normalizedDifference(['B8', 'B11']).rename('NDMI')
+        return ndmi.where(ndmi.lt(0), 0).where(ndmi.gt(1), 1)
     elif index_type == "NDWI":
         ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI')
-        config = INDEX_CONFIGS["NDWI"]
-        return ndwi.where(ndwi.lt(config["range"][0]), config["range"][0]).where(ndwi.gt(config["range"][1]), config["range"][1])
+        return ndwi.where(ndwi.lt(0), 0).where(ndwi.gt(1), 1)
     elif index_type == "RADAR":
-        # Sentinel-1 VV and VH must be present
-        vv = image.select('VV')
-        vh = image.select('VH')
+        # Sentinel-1 VV and VH are in dB, convert to power for RVI calculation
+        # power = 10^(dB/10)
+        vv_pwr = ee.Image(10).pow(image.select('VV').divide(10))
+        vh_pwr = ee.Image(10).pow(image.select('VH').divide(10))
         # RVI = 4 * VH / (VV + VH)
-        rvi = vh.multiply(4).divide(vv.add(vh)).rename('RADAR')
+        rvi = vh_pwr.multiply(4).divide(vv_pwr.add(vh_pwr)).rename('RADAR')
         return rvi.where(rvi.lt(0), 0).where(rvi.gt(1), 1)
     return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
 
@@ -516,15 +522,35 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
         stats_dict = {}
         
         if req.index_type == "RGB":
-            vis = img.select(["B4","B3","B2"]).visualize(min=0, max=3000)
+            vis = img.select(["B4","B3","B2"]).resample('bicubic').visualize(min=0, max=3000)
+        elif req.index_type == "RADAR":
+            # Engineering a professional RADAR FCC (False Color Composite)
+            # R: VV (dB), G: VH (dB), B: Ratio VH/VV (linear)
+            # This combination helps relate to physical features:
+            # - Soil/Urban (high VV) -> Reddish
+            # - Vegetation (high VH scattering) -> Greenish/Yellow
+            # - Water/Smooth (low scattering) -> Blue/Dark
+            vv = img.select('VV')
+            vh = img.select('VH')
+            
+            # Convert to power for a clean linear ratio
+            vv_pwr = ee.Image(10).pow(vv.divide(10))
+            vh_pwr = ee.Image(10).pow(vh.divide(10))
+            ratio = vh_pwr.divide(vv_pwr).rename('ratio')
+            
+            # UnitScale dB ranges to [0, 1] for visualization
+            vis = ee.Image.rgb(
+                vv.unitScale(-20, 0), 
+                vh.unitScale(-30, -5), 
+                ratio.unitScale(0, 0.5)
+            ).visualize()
         else:
-            idx_img = get_index(img, req.index_type)
+            idx_img = get_index(img, req.index_type).resample('bicubic')
             conf = INDEX_CONFIGS.get(req.index_type, INDEX_CONFIGS["NDVI"])
             vis = idx_img.visualize(min=conf["range"][0], max=conf["range"][1], palette=conf["palette"])
             
-            # Calculate stats for the index
+            # Calculate stats for the index with explicit scale
             try:
-                # Use mean scale of 10m
                 stats = idx_img.reduceRegion(
                     reducer=ee.Reducer.mean().combine(ee.Reducer.minMax(), "", True),
                     geometry=poly,
@@ -532,7 +558,7 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
                     maxPixels=1e9
                 ).getInfo()
                 stats_dict = stats
-                logger.info(f"Stats for {req.index_type}: {stats_dict}")
+                logger.info(f"Stats Result for {req.index_type}: {stats_dict}")
             except Exception as e:
                 logger.error(f"Stats Error: {e}")
 
@@ -558,23 +584,24 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
         }
         
         if req.index_type != "RGB":
-            # Combined reducer results in index_mean, index_min, index_max
+            # Priority 1: Specific combined names (Index_mean, Index_min, Index_max)
             res["mean"] = stats_dict.get(f"{req.index_type}_mean")
             res["min"] = stats_dict.get(f"{req.index_type}_min")
             res["max"] = stats_dict.get(f"{req.index_type}_max")
             
-            # Fallback if names are different or combined was simpler
-            if res["mean"] is None:
-                res["mean"] = stats_dict.get(req.index_type)
-            if res["min"] is None:
-                res["min"] = stats_dict.get("min")
-            if res["max"] is None:
-                res["max"] = stats_dict.get("max")
+            # Priority 2: Standard band names
+            if res["mean"] is None: res["mean"] = stats_dict.get(req.index_type)
+            if res["min"] is None: res["min"] = stats_dict.get("min")
+            if res["max"] is None: res["max"] = stats_dict.get("max")
             
-            # Final fallback if null
+            # Quality control: strictly clamp [0, 1] for dashboard
+            if res["mean"] is not None: res["mean"] = max(0.0, min(1.0, float(res["mean"])))
+            if res["min"] is not None: res["min"] = max(0.0, min(1.0, float(res["min"])))
+            if res["max"] is not None: res["max"] = max(0.0, min(1.0, float(res["max"])))
+            
+            # Final fallback for empty/failed keys
             if res["mean"] is None and len(stats_dict) > 0:
-                # If only one or a few keys exist, try to grab anything resembling a value
-                res["mean"] = next(iter(stats_dict.values()))
+                res["mean"] = max(0.0, min(1.0, float(next(iter(stats_dict.values())))))
             
         return res
 
