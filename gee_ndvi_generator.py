@@ -486,11 +486,11 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
         stats_dict = {}
         
         if req.index_type == "RGB":
-            vis = img.select(["B4","B3","B2"]).resample('bicubic').visualize(min=0, max=3000).reproject(crs='EPSG:3857', scale=10)
+            vis = img.select(["B4","B3","B2"]).resample('bicubic').visualize(min=0, max=3000)
         else:
             idx_img = get_index(img, req.index_type).resample('bicubic')
             conf = INDEX_CONFIGS[req.index_type]
-            vis = idx_img.visualize(min=conf["range"][0], max=conf["range"][1], palette=conf["palette"]).reproject(crs='EPSG:3857', scale=10)
+            vis = idx_img.visualize(min=conf["range"][0], max=conf["range"][1], palette=conf["palette"])
             
             # Calculate stats for the index
             stats = idx_img.reduceRegion(
