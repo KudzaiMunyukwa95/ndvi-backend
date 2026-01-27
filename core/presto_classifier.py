@@ -3,7 +3,6 @@ Presto-based Crop Classification Module
 Uses NASA Harvest's Presto foundation model for satellite-based crop type detection
 """
 
-import torch
 import numpy as np
 import ee
 from datetime import datetime, timedelta
@@ -18,8 +17,7 @@ class CropClassifier:
     """
     
     def __init__(self):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"Initializing Presto on {self.device}")
+        logger.info("Initializing Crop Classifier (rule-based mode)")
         
         # Crop type mapping (Zimbabwe-specific)
         self.crop_labels = {
@@ -118,7 +116,8 @@ class CropClassifier:
     
     def predict(self, sentinel2_timeseries: np.ndarray) -> Dict:
         """
-        Run Presto inference on Sentinel-2 time series
+        Run crop classification on Sentinel-2 time series
+        Currently using rule-based classifier (Presto integration coming soon)
         
         Args:
             sentinel2_timeseries: numpy array [time_steps, 10_bands]
@@ -130,53 +129,9 @@ class CropClassifier:
                 "alternatives": List[Dict]
             }
         """
-        try:
-            # Load model if not already loaded
-            self._load_model()
-            
-            # Check if we're using rule-based fallback
-            if self.model == "rule_based":
-                return self._fallback_prediction(sentinel2_timeseries)
-            
-            # Convert to tensor
-            x = torch.from_numpy(sentinel2_timeseries).unsqueeze(0).to(self.device)  # [1, time, bands]
-            
-            # Run inference
-            with torch.no_grad():
-                # Get Presto embeddings
-                embeddings = self.model.encoder(x)
-                
-                # Classify (you may need to add a classification head)
-                # For now, using a simple approach
-                logits = self.model.classifier(embeddings) if hasattr(self.model, 'classifier') else embeddings
-                
-                # Get probabilities
-                probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
-            
-            # Get top predictions
-            top_indices = np.argsort(probs)[::-1][:3]
-            
-            result = {
-                "crop_type": self.crop_labels.get(top_indices[0], "Unknown"),
-                "confidence": float(probs[top_indices[0]]),
-                "alternatives": [
-                    {
-                        "crop": self.crop_labels.get(idx, "Unknown"),
-                        "confidence": float(probs[idx])
-                    }
-                    for idx in top_indices[1:3]
-                ],
-                "method": "presto_foundation_model"
-            }
-            
-            logger.info(f"Prediction: {result['crop_type']} ({result['confidence']:.2%})")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Prediction error: {e}")
-            # Fallback to rule-based if Presto fails
-            return self._fallback_prediction(sentinel2_timeseries)
+        # For now, always use rule-based classifier
+        # Presto integration will be added post-symposium
+        return self._fallback_prediction(sentinel2_timeseries)
     
     def _fallback_prediction(self, timeseries: np.ndarray) -> Dict:
         """
