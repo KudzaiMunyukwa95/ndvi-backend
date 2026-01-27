@@ -121,13 +121,15 @@ class CropClassifier:
             logger.error(f"Error extracting Sentinel-2 data: {e}")
             raise
     
-    def predict(self, sentinel2_timeseries: np.ndarray) -> Dict:
+    def predict(self, sentinel2_timeseries: np.ndarray, start_date: str, end_date: str) -> Dict:
         """
         Run crop classification on Sentinel-2 time series
         Currently using rule-based classifier (Presto integration coming soon)
         
         Args:
             sentinel2_timeseries: numpy array [time_steps, 10_bands]
+            start_date: ISO date string
+            end_date: ISO date string
             
         Returns:
             {
@@ -138,41 +140,113 @@ class CropClassifier:
         """
         # For now, always use rule-based classifier
         # Presto integration will be added post-symposium
-        return self._fallback_prediction(sentinel2_timeseries)
+        return self._fallback_prediction(sentinel2_timeseries, start_date, end_date)
     
-    def _fallback_prediction(self, timeseries: np.ndarray) -> Dict:
+    def _fallback_prediction(self, timeseries: np.ndarray, start_date: str, end_date: str) -> Dict:
         """
-        Simple rule-based fallback if Presto fails
-        Uses NDVI patterns to classify crops
+        Seasonal rule-based classifier for Zimbabwe
+        Distinguishes between crops based on NDVI magnitude, trend (slope), and season
         """
-        logger.warning("Using fallback rule-based classifier")
+        logger.info(f"Running seasonal rule-based classifier for {start_date} to {end_date}")
         
         # Calculate NDVI from bands (B8-B4)/(B8+B4)
         nir = timeseries[:, 6]  # B8
         red = timeseries[:, 2]  # B4
         ndvi = (nir - red) / (nir + red + 1e-8)
         
-        # Simple rules
-        max_ndvi = np.max(ndvi)
-        mean_ndvi = np.mean(ndvi)
+        # Calculate key metrics
+        max_ndvi = float(np.max(ndvi))
+        mean_ndvi = float(np.mean(ndvi))
         
-        if max_ndvi > 0.7 and mean_ndvi > 0.5:
-            crop = "Maize"
-            conf = 0.75
-        elif max_ndvi < 0.6 and mean_ndvi < 0.4:
-            crop = "Wheat"
-            conf = 0.70
-        elif max_ndvi > 0.65:
-            crop = "Tobacco"
-            conf = 0.65
+        # Calculate growth trend (slope)
+        # Using simple linear regression slope if we have enough points, else start-end diff
+        if len(ndvi) > 2:
+            x = np.arange(len(ndvi))
+            slope = float(np.polyfit(x, ndvi, 1)[0])
+        elif len(ndvi) == 2:
+            slope = float(ndvi[1] - ndvi[0])
         else:
-            crop = "Unknown"
-            conf = 0.50
+            slope = 0.0
+            
+        # Parse months to determine season
+        try:
+            start_month = datetime.strptime(start_date, "%Y-%m-%d").month
+            end_month = datetime.strptime(end_date, "%Y-%m-%d").month
+        except:
+            # Fallback if date parsing fails
+            start_month = 1
+            end_month = 12
+            
+        # WINTER SEASON (May - September)
+        # Main crop: Wheat
+        is_winter = (5 <= start_month <= 8) or (5 <= end_month <= 9)
+        
+        # SUMMER SEASON (November - April)
+        # Main crops: Maize, Tobacco, Cotton, Soybeans
+        is_summer = (start_month >= 11 or start_month <= 3)
+        
+        candidates = []
+        
+        # 1. WHEAT (Winter strictly irrigated)
+        # Signature: High growth (slope > 0) or sustained high NDVI in Winter
+        if is_winter:
+            if slope > 0.01 and max_ndvi > 0.35:
+                candidates.append({"crop": "Wheat", "confidence": 0.85 if max_ndvi > 0.6 else 0.75})
+            elif max_ndvi > 0.6 and mean_ndvi > 0.4:
+                candidates.append({"crop": "Wheat", "confidence": 0.70})
+
+        # 2. MAIZE (Summer rain-fed or irrigated)
+        # Signature: Very high peak NDVI (>0.75)
+        if max_ndvi > 0.75:
+            # If it's winter and increasing, Wheat is more likely, otherwise Maize
+            conf = 0.80 if not is_winter or slope < 0 else 0.40
+            candidates.append({"crop": "Maize", "confidence": conf})
+        elif max_ndvi > 0.65 and mean_ndvi > 0.45:
+            candidates.append({"crop": "Maize", "confidence": 0.60})
+
+        # 3. TOBACCO
+        # Signature: Medium-high steady NDVI, often distinct from fast-growing Maize
+        if 0.5 < max_ndvi < 0.75 and abs(slope) < 0.02:
+            candidates.append({"crop": "Tobacco", "confidence": 0.65})
+        elif is_summer and max_ndvi > 0.6:
+            candidates.append({"crop": "Tobacco", "confidence": 0.55})
+
+        # 4. BARE/FALLOW
+        if max_ndvi < 0.25:
+            return {
+                "crop_type": "Bare Soil / Fallow", 
+                "confidence": 0.90, 
+                "alternatives": [],
+                "method": "rule_based_fallback"
+            }
+
+        # Sort candidates by confidence
+        candidates.sort(key=lambda x: x["confidence"], reverse=True)
+        
+        if not candidates:
+            # Absolute fallback
+            if max_ndvi > 0.6:
+                crop_res = "Maize"
+                conf_res = 0.50
+            else:
+                crop_res = "Unknown"
+                conf_res = 0.40
+            
+            return {
+                "crop_type": crop_res,
+                "confidence": conf_res,
+                "alternatives": [],
+                "method": "rule_based_fallback"
+            }
+
+        # Format result
+        primary = candidates[0]
+        alternatives = candidates[1:3] if len(candidates) > 1 else []
         
         return {
-            "crop_type": crop,
-            "confidence": conf,
-            "alternatives": [],
+            "crop_type": primary["crop"],
+            "confidence": primary["confidence"],
+            "alternatives": alternatives,
             "method": "rule_based_fallback"
         }
     
@@ -196,7 +270,7 @@ class CropClassifier:
             timeseries = self.extract_sentinel2_timeseries(polygon, start_date, end_date)
             
             # Run prediction
-            result = self.predict(timeseries)
+            result = self.predict(timeseries, start_date, end_date)
             
             return {
                 "success": True,
