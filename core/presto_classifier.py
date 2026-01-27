@@ -46,9 +46,13 @@ class CropClassifier:
                 self.model.to(self.device)
                 self.model.eval()
                 logger.info("Presto model loaded successfully")
+            except ImportError:
+                logger.warning("Presto package not available - using rule-based classifier")
+                self.model = "rule_based"  # Flag to use fallback
             except Exception as e:
                 logger.error(f"Failed to load Presto: {e}")
-                raise
+                logger.warning("Falling back to rule-based classifier")
+                self.model = "rule_based"
     
     def extract_sentinel2_timeseries(self, polygon: ee.Geometry, start_date: str, end_date: str) -> np.ndarray:
         """
@@ -129,6 +133,10 @@ class CropClassifier:
         try:
             # Load model if not already loaded
             self._load_model()
+            
+            # Check if we're using rule-based fallback
+            if self.model == "rule_based":
+                return self._fallback_prediction(sentinel2_timeseries)
             
             # Convert to tensor
             x = torch.from_numpy(sentinel2_timeseries).unsqueeze(0).to(self.device)  # [1, time, bands]
