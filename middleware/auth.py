@@ -17,8 +17,13 @@ async def verify_auth(authorization: str = Header(None)):
             detail="Missing authorization header"
         )
     
-    token = authorization.replace('Bearer ', '') if authorization.startswith('Bearer ') else authorization
+    token = authorization.replace('Bearer ', '').strip() if authorization.startswith('Bearer ') else authorization.strip()
+    # Also strip any potential quotes if they were added to the environment variable
+    token = token.strip('"').strip("'")
+    
     admin_token = os.environ.get('ADMIN_TOKEN')
+    if admin_token:
+        admin_token = admin_token.strip().strip('"').strip("'")
     
     if not admin_token:
         logger.error('⚠️ CRITICAL: ADMIN_TOKEN not configured')
@@ -28,7 +33,7 @@ async def verify_auth(authorization: str = Header(None)):
         )
     
     if token != admin_token:
-        logger.warning('Invalid token provided')
+        logger.warning(f'Invalid token provided. Received: {token[:5]}..., Expected: {admin_token[:5]}...')
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token"
