@@ -36,6 +36,7 @@ from services.report_service import analyze_growth_stage, build_report_structure
 # from services.openai_client import generate_ai_analysis
 from services.pdf_service import generate_pdf_report
 from core.sentinel1_core import get_radar_visualization_url
+from core.presto_classifier import CropClassifier
 
 # Configure real-time logging
 logging.basicConfig(
@@ -187,6 +188,19 @@ class AdvancedReportRequest(BaseModel):
     coordinates: Union[Dict, List]
     start_date: str
     end_date: str
+
+class CropClassificationRequest(BaseModel):
+    coordinates: List[List[List[float]]]
+    start_date: str
+    end_date: str
+    field_id: Optional[str] = None
+
+class TrainingLabelRequest(BaseModel):
+    field_id: str
+    crop_type: str
+    confidence: str = "certain"  # certain, probable, guess
+    labeled_by: str
+    notes: Optional[str] = None
 
 # --- Core Earth Engine Logic (Ported from Backup) ---
 
@@ -816,6 +830,135 @@ async def advanced_report(req: AdvancedReportRequest, auth: bool = Depends(verif
 
     try: return await asyncio.to_thread(sync_logic)
     except Exception as e: raise HTTPException(500, str(e))
+
+# --- Crop Classification Endpoints ---
+
+# Initialize crop classifier (lazy loaded)
+crop_classifier = None
+
+def get_classifier():
+    global crop_classifier
+    if crop_classifier is None:
+        crop_classifier = CropClassifier()
+    return crop_classifier
+
+@app.post("/api/classify_crop")
+async def classify_crop(req: CropClassificationRequest, auth: bool = Depends(verify_auth)):
+    """
+    Classify crop type using Presto foundation model
+    """
+    if not gee_state["initialized"]:
+        raise HTTPException(500, "GEE not ready")
+    
+    # Check cache first
+    ckey = get_cache_key(req.coordinates, req.start_date, req.end_date, "crop_class")
+    with cache_lock:
+        if ckey in cache:
+            logger.info("Returning cached crop classification")
+            return cache[ckey]
+    
+    def sync_logic():
+        try:
+            classifier = get_classifier()
+            result = classifier.classify_field(
+                req.coordinates,
+                req.start_date,
+                req.end_date
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Crop classification error: {e}")
+            raise
+    
+    try:
+        result = await asyncio.to_thread(sync_logic)
+        with cache_lock:
+            cache[ckey] = result
+        return result
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/api/training/label_field")
+async def label_field(req: TrainingLabelRequest, auth: bool = Depends(verify_auth)):
+    """
+    Save a training label for a field
+    This will be used for fine-tuning the model
+    """
+    try:
+        # For now, store in a simple JSON file
+        # In production, this should go to a database
+        import json
+        from pathlib import Path
+        
+        labels_file = Path("training_labels.json")
+        
+        # Load existing labels
+        if labels_file.exists():
+            with open(labels_file, 'r') as f:
+                labels = json.load(f)
+        else:
+            labels = []
+        
+        # Add new label
+        label_entry = {
+            "field_id": req.field_id,
+            "crop_type": req.crop_type,
+            "confidence": req.confidence,
+            "labeled_by": req.labeled_by,
+            "labeled_at": datetime.now().isoformat(),
+            "notes": req.notes
+        }
+        labels.append(label_entry)
+        
+        # Save
+        with open(labels_file, 'w') as f:
+            json.dump(labels, f, indent=2)
+        
+        logger.info(f"Saved training label for field {req.field_id}: {req.crop_type}")
+        
+        return {
+            "success": True,
+            "message": "Label saved successfully",
+            "total_labels": len(labels)
+        }
+    except Exception as e:
+        logger.error(f"Error saving label: {e}")
+        raise HTTPException(500, str(e))
+
+@app.get("/api/training/stats")
+async def get_training_stats(auth: bool = Depends(verify_auth)):
+    """
+    Get statistics about training data
+    """
+    try:
+        import json
+        from pathlib import Path
+        from collections import Counter
+        
+        labels_file = Path("training_labels.json")
+        
+        if not labels_file.exists():
+            return {
+                "total_labels": 0,
+                "crop_distribution": {},
+                "confidence_distribution": {}
+            }
+        
+        with open(labels_file, 'r') as f:
+            labels = json.load(f)
+        
+        crop_counts = Counter(label["crop_type"] for label in labels)
+        confidence_counts = Counter(label["confidence"] for label in labels)
+        
+        return {
+            "total_labels": len(labels),
+            "crop_distribution": dict(crop_counts),
+            "confidence_distribution": dict(confidence_counts),
+            "ready_for_training": len(labels) >= 50
+        }
+    except Exception as e:
+        logger.error(f"Error getting training stats: {e}")
+        raise HTTPException(500, str(e))
 
 if __name__ == "__main__":
     import uvicorn
