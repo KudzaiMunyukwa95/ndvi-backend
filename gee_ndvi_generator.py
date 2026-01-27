@@ -67,10 +67,10 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"], # More permissive for debugging
+    allow_credentials=False, # We use Bearer tokens, not cookies
     allow_methods=["*"],
-    allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+    allow_headers=["*"], # Allow all headers including custom ones
 )
 
 # In-memory caching
