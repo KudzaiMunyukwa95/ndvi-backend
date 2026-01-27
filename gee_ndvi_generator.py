@@ -190,13 +190,13 @@ class AdvancedReportRequest(BaseModel):
     end_date: str
 
 class CropClassificationRequest(BaseModel):
-    coordinates: List[Any] # More flexible to handle different coordinate structures or whole GeoJSON
-    start_date: str
-    end_date: str
-    field_id: Optional[Union[str, int]] = None
-    mode: Optional[str] = "single"
-    detect_weeds: Optional[bool] = False
-    export_map: Optional[bool] = False
+    coordinates: Any
+    start_date: Any
+    end_date: Any
+    field_id: Any = None
+    mode: Any = "single"
+    detect_weeds: Any = False
+    export_map: Any = False
 
 class TrainingLabelRequest(BaseModel):
     field_id: str
