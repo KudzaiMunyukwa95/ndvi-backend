@@ -75,30 +75,37 @@ class CropClassifier:
             
             logger.info(f"Found {size} Sentinel-2 images")
             
-            # Extract mean values for each image
-            def extract_bands(image):
+            # Extract mean values for all images in the collection efficiently
+            def reduce_image(image):
                 stats = image.reduceRegion(
                     reducer=ee.Reducer.mean(),
                     geometry=polygon,
                     scale=20,
                     maxPixels=1e9
-                ).getInfo()
+                )
                 
-                # Extract band values in correct order
-                bands = ['B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12']
-                values = [stats.get(band, 0) for band in bands]
-                
-                return values
+                # Create a feature with the mean values as properties
+                return ee.Feature(None, stats).set("system:time_start", image.get("system:time_start"))
             
-            # Get all images as list
-            images = collection.toList(size)
+            # Use map to process all images on GEE servers
+            features_collection = collection.map(reduce_image)
             
-            # Extract features for each image
+            # Get data in one single info request
+            features_list = features_collection.getInfo()['features']
+            
+            if not features_list:
+                raise ValueError("Could not extract band data from imagery")
+            
+            # Extract features in correct order
+            bands = ['B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12']
             timeseries = []
-            for i in range(min(size, 50)):  # Limit to 50 images for speed
-                img = ee.Image(images.get(i))
-                features = extract_bands(img)
-                timeseries.append(features)
+            
+            for feat in features_list:
+                props = feat['properties']
+                values = [props.get(band, 0) for band in bands]
+                timeseries.append(values)
+            
+            logger.info(f"Successfully extracted {len(timeseries)} time steps from GEE")
             
             # Convert to numpy array
             timeseries_array = np.array(timeseries, dtype=np.float32)
