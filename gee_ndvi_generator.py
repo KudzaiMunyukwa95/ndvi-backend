@@ -190,10 +190,13 @@ class AdvancedReportRequest(BaseModel):
     end_date: str
 
 class CropClassificationRequest(BaseModel):
-    coordinates: List[List[List[float]]]
+    coordinates: List[Any] # More flexible to handle different coordinate structures or whole GeoJSON
     start_date: str
     end_date: str
-    field_id: Optional[str] = None
+    field_id: Optional[Union[str, int]] = None
+    mode: Optional[str] = "single"
+    detect_weeds: Optional[bool] = False
+    export_map: Optional[bool] = False
 
 class TrainingLabelRequest(BaseModel):
     field_id: str
@@ -847,6 +850,9 @@ async def classify_crop(req: CropClassificationRequest, auth: bool = Depends(ver
     """
     Classify crop type using Presto foundation model
     """
+    logger.info(f"Received crop classification request for field: {req.field_id}")
+    logger.debug(f"Request coordinates structure: {type(req.coordinates)}")
+    
     if not gee_state["initialized"]:
         raise HTTPException(500, "GEE not ready")
     
