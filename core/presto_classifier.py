@@ -211,13 +211,22 @@ class CropClassifier:
         elif is_summer and max_ndvi > 0.6:
             candidates.append({"crop": "Tobacco", "confidence": 0.55})
 
+        # Format NDVI time series for frontend
+        ndvi_series = []
+        for i, val in enumerate(ndvi):
+            ndvi_series.append({
+                "value": float(val),
+                "index": i  # Approximate time step
+            })
+
         # 4. BARE/FALLOW
         if max_ndvi < 0.25:
             return {
                 "crop_type": "Bare Soil / Fallow", 
                 "confidence": 0.90, 
                 "alternatives": [],
-                "method": "rule_based_fallback"
+                "method": "rule_based_fallback",
+                "ndvi_series": ndvi_series
             }
 
         # Sort candidates by confidence
@@ -236,21 +245,14 @@ class CropClassifier:
                 "crop_type": crop_res,
                 "confidence": conf_res,
                 "alternatives": [],
-                "method": "rule_based_fallback"
+                "method": "rule_based_fallback",
+                "ndvi_series": ndvi_series
             }
 
         # Format result
         primary = candidates[0]
         alternatives = candidates[1:3] if len(candidates) > 1 else []
         
-        # Format NDVI time series for frontend
-        ndvi_series = []
-        for i, val in enumerate(ndvi):
-            ndvi_series.append({
-                "value": float(val),
-                "index": i  # Approximate time step
-            })
-
         return {
             "crop_type": primary["crop"],
             "confidence": primary["confidence"],
