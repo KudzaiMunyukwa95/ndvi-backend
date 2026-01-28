@@ -231,8 +231,9 @@ def initialize_gee_at_startup():
         gee_state["initializing"] = False
 
 def get_cache_key(coords, start_date, end_date, endpoint_type, index_type="NDVI"):
+    CACHE_VERSION = "v2" # Bust cache for new ndvi_series data
     coords_str = json.dumps(coords, sort_keys=True)
-    key_string = f"{endpoint_type}_{coords_str}_{start_date}_{end_date}_{index_type}"
+    key_string = f"{endpoint_type}_{coords_str}_{start_date}_{end_date}_{index_type}_{CACHE_VERSION}"
     return hashlib.md5(key_string.encode()).hexdigest()
 
 def get_index(image, index_type):
