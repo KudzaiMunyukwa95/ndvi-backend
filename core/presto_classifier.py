@@ -243,11 +243,20 @@ class CropClassifier:
         primary = candidates[0]
         alternatives = candidates[1:3] if len(candidates) > 1 else []
         
+        # Format NDVI time series for frontend
+        ndvi_series = []
+        for i, val in enumerate(ndvi):
+            ndvi_series.append({
+                "value": float(val),
+                "index": i  # Approximate time step
+            })
+
         return {
             "crop_type": primary["crop"],
             "confidence": primary["confidence"],
             "alternatives": alternatives,
-            "method": "rule_based_fallback"
+            "method": "rule_based_fallback",
+            "ndvi_series": ndvi_series
         }
     
     def classify_field(self, coordinates: List, start_date: str, end_date: str) -> Dict:
