@@ -685,36 +685,38 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
         def add_all_stats(img):
             clipped = img.clip(poly)
             # Optimization: Fetch both NDVI and SAVI in a single reduction call
-            # This reduces GEE overhead by 50% for hybrid requests
             hybrid_img = get_index(clipped, "NDVI").addBands(get_index(clipped, "SAVI"))
             stats = hybrid_img.reduceRegion(ee.Reducer.mean(), poly, 20)
+            # Extract cloud percentage for scientific auditing
+            cloud = img.get('CLOUDY_PIXEL_PERCENTAGE')
             
             return img.set({
                 'ndvi': stats.get('NDVI'),
                 'savi': stats.get('SAVI'),
-                'date': img.date().format('YYYY-MM-dd')
+                'date': img.date().format('YYYY-MM-dd'),
+                'cloud': cloud
             })
         
         res_radar = None
         if req.use_hybrid:
             logger.info("Using HYBRID processing path (Optical-Radar Fusion).")
-            # 1. Process Sentinel-2 (Optical)
+            # 1. Process Sentinel-2 (Optical) - Synchronized batch fetch
             mapped_col = col.map(add_all_stats)
-            results = mapped_col.select(['ndvi', 'savi']).reduceColumns(
-                reducer=ee.Reducer.toList().repeat(2),
-                selectors=['ndvi', 'savi']
+            results = mapped_col.reduceColumns(
+                reducer=ee.Reducer.toList().repeat(4),
+                selectors=['ndvi', 'savi', 'date', 'cloud']
             ).getInfo()
             
             ndvis = results['list'][0]
             savis = results['list'][1]
-            date_list = mapped_col.aggregate_array('date').getInfo()
-            clouds = mapped_col.aggregate_array('cloud').getInfo()
+            dates = results['list'][2]
+            clouds = results['list'][3]
             
             series = []
-            for i in range(len(date_list)):
+            for i in range(len(dates)):
                 if ndvis[i] is not None:
                     series.append({
-                        "date": date_list[i],
+                        "date": dates[i],
                         "ndvi": max(0.0, min(1.0, float(ndvis[i]))),
                         "savi": max(0.0, min(1.0, float(savis[i]))) if savis[i] is not None else None,
                         "cloud_percentage": float(clouds[i]) if clouds[i] is not None else 0
