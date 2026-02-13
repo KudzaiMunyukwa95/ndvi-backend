@@ -404,15 +404,18 @@ def get_optimized_collection(polygon, start, end, limit_images=True, index_type=
         
     base = ee.ImageCollection("COPERNICUS/S2_HARMONIZED").filterBounds(polygon).filterDate(start, end)
     size = base.size().getInfo()
+    logger.info(f"S2 Raw Collection size: {size}")
     if size == 0: return None, 0, None
     threshold = 10 if size > 50 else (20 if size > 20 else 80)
     max_img = 15 if size > 50 else (20 if size > 20 else size)
+    logger.info(f"Filtering with cloud threshold: {threshold}, max_img: {max_img}")
     col = base.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold)).sort("CLOUDY_PIXEL_PERCENTAGE")
     if limit_images: col = col.limit(max_img)
+    final_size = col.size().getInfo()
+    logger.info(f"Final optimized collection size: {final_size}")
     
     # Removed collection-level resampling to ensure tile engine stability
     
-    final_size = col.size().getInfo()
     avg_cloud = calculate_collection_cloud_cover(col, polygon, start, end)
     return col, final_size, avg_cloud.getInfo() if avg_cloud else None
 
@@ -648,14 +651,25 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
 
 @app.post("/api/gee_ndvi_timeseries")
 async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verify_auth)):
+    logger.info(f"📊 Starting Timeseries Generation: {req.index_type} for {req.startDate} to {req.endDate}")
+    logger.info(f"📍 Coordinates Sample: {req.coordinates[0][:2] if req.coordinates and req.coordinates[0] else 'None'}")
+    
     ckey = get_cache_key(req.coordinates, req.startDate, req.endDate, "ts", req.index_type)
     with cache_lock:
-        if ckey in cache: return cache[ckey]
+        if ckey in cache: 
+            logger.info("Found timeseries in cache.")
+            return cache[ckey]
 
     def sync_logic():
         poly = ee.Geometry.Polygon(req.coordinates)
+        logger.info("GEE Geometry created successfully.")
+        
         col, size, _ = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False, index_type=req.index_type)
-        if not col or size == 0: raise Exception("No imagery")
+        logger.info(f"Collection optimized. Size: {size}")
+        
+        if not col or size == 0: 
+            logger.warning("No imagery found for this request.")
+            raise Exception("No imagery")
         
         def add_all_stats(img):
             clipped = img.clip(poly)
@@ -671,6 +685,7 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
             })
         
         if req.use_hybrid:
+            logger.info("Using HYBRID processing path.")
             mapped_col = col.map(add_all_stats)
             # Batch fetch all data arrays to minimize getInfo() overhead
             results = mapped_col.select(['ndvi', 'savi']).reduceColumns(
@@ -691,6 +706,7 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
                         "savi": max(0.0, min(1.0, float(savis[i]))) if savis[i] is not None else None
                     })
         else:
+            logger.info(f"Using standard {req.index_type} processing path.")
             def add_stats(img):
                 clipped = img.clip(poly)
                 val = get_index(clipped, req.index_type).reduceRegion(ee.Reducer.mean(), poly, 20).get(req.index_type)
@@ -712,7 +728,11 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
         res = await asyncio.to_thread(sync_logic)
         with cache_lock: cache[ckey] = res
         return res
-    except Exception as e: raise HTTPException(500, str(e))
+    except Exception as e:
+        logger.error(f"❌ Timeseries 500 Error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
 
 @app.post("/api/agronomic_insight")
 async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_auth)):
