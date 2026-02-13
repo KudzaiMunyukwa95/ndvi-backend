@@ -405,19 +405,26 @@ def get_optimized_collection(polygon, start, end, limit_images=True, index_type=
     base = ee.ImageCollection("COPERNICUS/S2_HARMONIZED").filterBounds(polygon).filterDate(start, end)
     size = base.size().getInfo()
     logger.info(f"S2 Raw Collection size: {size}")
-    if size == 0: return None, 0, None
+    if size == 0: return None, 0, None, "No imagery available for this field in the selected date range."
+    
     threshold = 10 if size > 50 else (20 if size > 20 else 80)
     max_img = 15 if size > 50 else (20 if size > 20 else size)
-    logger.info(f"Filtering with cloud threshold: {threshold}, max_img: {max_img}")
     col = base.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", threshold)).sort("CLOUDY_PIXEL_PERCENTAGE")
+    col_size = col.size().getInfo()
+    
+    if col_size == 0:
+        logger.warning(f"Initial threshold {threshold}% yielded 0 images. Relaxing to 90%.")
+        col = base.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 90)).sort("CLOUDY_PIXEL_PERCENTAGE")
+        col_size = col.size().getInfo()
+        if col_size == 0:
+            return None, 0, None, "All available images are heavily clouded (>90%)."
+
     if limit_images: col = col.limit(max_img)
     final_size = col.size().getInfo()
     logger.info(f"Final optimized collection size: {final_size}")
     
-    # Removed collection-level resampling to ensure tile engine stability
-    
     avg_cloud = calculate_collection_cloud_cover(col, polygon, start, end)
-    return col, final_size, avg_cloud.getInfo() if avg_cloud else None
+    return col, final_size, (avg_cloud.getInfo() if avg_cloud else 0), None
 
 def detect_rainfall_without_emergence(ndvi_data, rainfall_data, min_rainfall_threshold=10, ndvi_threshold=0.2, response_window_days=14):
     if not rainfall_data or not ndvi_data: return None
@@ -544,8 +551,9 @@ async def generate_ndvi(req: NdviRequest, auth: bool = Depends(verify_auth)):
     
     def sync_logic():
         poly = ee.Geometry.Polygon(req.coordinates)
-        col, size, cloud = get_optimized_collection(poly, req.startDate, req.endDate, index_type=req.index_type)
-        if not col or size == 0: raise Exception("No imagery found for path/date")
+        col, size, cloud, error_msg = get_optimized_collection(poly, req.startDate, req.endDate, index_type=req.index_type)
+        if error_msg: return {"success": False, "detail": error_msg}
+        if not col or size == 0: return {"success": False, "detail": "No imagery found for path/date"}
         first_image = col.first()
         image_date = first_image.date().format("YYYY-MM-dd").getInfo()
         image_time = first_image.date().format("YYYY-MM-dd HH:mm:ss").getInfo()
@@ -664,12 +672,15 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
         poly = ee.Geometry.Polygon(req.coordinates)
         logger.info("GEE Geometry created successfully.")
         
-        col, size, _ = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False, index_type=req.index_type)
+        col, size, _, error_msg = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False, index_type=req.index_type)
         logger.info(f"Collection optimized. Size: {size}")
         
+        if error_msg: 
+            logger.warning(f"Imagery issue: {error_msg}")
+            return {"success": False, "detail": error_msg}
         if not col or size == 0: 
             logger.warning("No imagery found for this request.")
-            raise Exception("No imagery")
+            return {"success": False, "detail": "No imagery"}
         
         def add_all_stats(img):
             clipped = img.clip(poly)
@@ -814,7 +825,9 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
 async def advanced_report(req: AdvancedReportRequest, auth: bool = Depends(verify_auth)):
     def sync_logic():
         poly = ee.Geometry.Polygon(req.coordinates["coordinates"] if isinstance(req.coordinates, dict) else req.coordinates)
-        col, size, cloud = get_optimized_collection(poly, req.start_date, req.end_date, False)
+        col, size, cloud, error_msg = get_optimized_collection(poly, req.start_date, req.end_date, False)
+        if error_msg:
+            return {"success": False, "message": error_msg}
         if not col or size == 0:
             return {"success": False, "message": "No imagery available for this field in the selected date range."}
             
