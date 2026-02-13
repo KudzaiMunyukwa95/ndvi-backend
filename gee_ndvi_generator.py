@@ -167,9 +167,9 @@ class AgronomicRequest(BaseModel):
     latitude: Union[float, str] = "Unknown"
     longitude: Union[float, str] = "Unknown"
     date_range: str = "Unknown"
-    date_range: str = "Unknown"
     ndvi_data: List[Dict[str, Any]] = []
     savi_data: Optional[List[Dict[str, Any]]] = None
+    radar_data: Optional[List[Dict[str, Any]]] = None
     rainfall_data: List[Dict[str, Any]] = []
     temperature_data: List[Dict[str, Any]] = []
     gdd_data: List[Dict[str, Any]] = []
@@ -695,10 +695,11 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
                 'date': img.date().format('YYYY-MM-dd')
             })
         
+        res_radar = None
         if req.use_hybrid:
-            logger.info("Using HYBRID processing path.")
+            logger.info("Using HYBRID processing path (Optical-Radar Fusion).")
+            # 1. Process Sentinel-2 (Optical)
             mapped_col = col.map(add_all_stats)
-            # Batch fetch all data arrays to minimize getInfo() overhead
             results = mapped_col.select(['ndvi', 'savi']).reduceColumns(
                 reducer=ee.Reducer.toList().repeat(2),
                 selectors=['ndvi', 'savi']
@@ -707,6 +708,7 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
             ndvis = results['list'][0]
             savis = results['list'][1]
             date_list = mapped_col.aggregate_array('date').getInfo()
+            clouds = mapped_col.aggregate_array('cloud').getInfo()
             
             series = []
             for i in range(len(date_list)):
@@ -714,21 +716,79 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
                     series.append({
                         "date": date_list[i],
                         "ndvi": max(0.0, min(1.0, float(ndvis[i]))),
-                        "savi": max(0.0, min(1.0, float(savis[i]))) if savis[i] is not None else None
+                        "savi": max(0.0, min(1.0, float(savis[i]))) if savis[i] is not None else None,
+                        "cloud_percentage": float(clouds[i]) if clouds[i] is not None else 0
                     })
+
+            # 2. Add Sentinel-1 (Radar) Fusion to see through clouds
+            try:
+                radar_col, radar_size, _ = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False, index_type="RADAR")
+                if radar_col and radar_size > 0:
+                    logger.info(f"Fusing {radar_size} Radar observations.")
+                    radar_data = radar_col.map(lambda img: img.set({
+                        'rvi': get_index(img, "RADAR").reduceRegion(ee.Reducer.mean(), poly, 20).get('RADAR'),
+                        'date': img.date().format('YYYY-MM-dd')
+                    })).reduceColumns(ee.Reducer.toList().repeat(2), ['rvi', 'date']).getInfo()
+                    
+                    r_vals = radar_data['list'][0]
+                    r_dates = radar_data['list'][1]
+                    
+                    radar_series = []
+                    for i in range(len(r_dates)):
+                        if r_vals[i] is not None:
+                            radar_series.append({"date": r_dates[i], "rvi": max(0.0, min(1.0, float(r_vals[i])))})
+                    
+                    # Store in metadata for the insight engine
+                    res_radar = radar_series
+                else:
+                    res_radar = None
+            except Exception as re:
+                logger.error(f"Radar Fusion error: {re}")
+                res_radar = None
         else:
             logger.info(f"Using standard {req.index_type} processing path.")
             def add_stats(img):
                 clipped = img.clip(poly)
                 val = get_index(clipped, req.index_type).reduceRegion(ee.Reducer.mean(), poly, 20).get(req.index_type)
-                return img.set('val', val, 'date', img.date().format('YYYY-MM-dd'))
+                # Extract cloud percentage for scientific auditing
+                cloud = img.get('CLOUDY_PIXEL_PERCENTAGE')
+                return img.set('val', val, 'date', img.date().format('YYYY-MM-dd'), 'cloud', cloud)
             
-            data = col.map(add_stats).aggregate_array('val').getInfo()
-            dates = col.map(add_stats).aggregate_array('date').getInfo()
-            series = [{"date": dates[i], "ndvi": max(0.0, min(1.0, float(data[i])))} for i in range(len(dates)) if data[i] is not None]
+            # Map over collection and batch fetch results
+            mapped_col = col.map(add_stats)
+            data_list = mapped_col.reduceColumns(
+                reducer=ee.Reducer.toList().repeat(3),
+                selectors=['val', 'date', 'cloud']
+            ).getInfo()
+            
+            vals = data_list['list'][0]
+            dates = data_list['list'][1]
+            clouds = data_list['list'][2]
+            
+            series = []
+            for i in range(len(dates)):
+                if vals[i] is not None:
+                    series.append({
+                        "date": dates[i],
+                        "ndvi": max(0.0, min(1.0, float(vals[i]))),
+                        "cloud_percentage": float(clouds[i]) if clouds[i] is not None else 0
+                    })
         
         series.sort(key=lambda x: x['date'])
-        res = {"success": True, "time_series": series, "collection_size": size}
+        
+        # Calculate scientific metadata
+        avg_cloud = sum(d['cloud_percentage'] for d in series) / len(series) if series else 0
+        res = {
+            "success": True, 
+            "time_series": series, 
+            "radar_series": res_radar if req.use_hybrid else None,
+            "collection_size": size,
+            "metadata": {
+                "average_cloud_cover": avg_cloud,
+                "observation_frequency": len(series),
+                "sensor_fusion": "S2 (Optical) + S1 (Radar)" if req.use_hybrid and res_radar else "S2 (Optical)"
+            }
+        }
         
         if req.index_type == "NDVI" and req.crop and not req.use_hybrid:
             edate, conf, meta = detect_wheat_winter_emergence(series, req.coordinates, req.forceWinterDetector) if req.crop.lower() == 'wheat' else (None, None, {})
@@ -799,13 +859,45 @@ async def agronomic_insight(req: AgronomicRequest, auth: bool = Depends(verify_a
         if not primary_res.get("no_planting_detected") and tillage_res["tillage_detected"]:
             planting_text += " " + tillage_res["message"]
             
-        confidence = primary_res.get("confidence", "medium")
-        if confidence != "high" and req.ndvi_data and len(req.ndvi_data) >= 10:
-            if avg_cloud_cover is not None and avg_cloud_cover < 20: confidence = "high"
-            
+        # Scientific Confidence Scoring Model
+        # Base confidence from detector
+        conf_score = 0
+        conf_base = primary_res.get("confidence", "medium")
+        if conf_base == "high": conf_score += 60
+        elif conf_base == "medium": conf_score += 40
+        else: conf_score += 20
+
+        # Adjust for data frequency (Observation density)
+        obs_count = len(req.ndvi_data)
+        if obs_count >= 15: conf_score += 20
+        elif obs_count >= 8: conf_score += 10
+        
+        # Penalty for Atmospheric Interference (Cloud)
+        avg_cloud = 0
+        if req.ndvi_data:
+            clouds = [d.get("cloud_percentage", 0) for d in req.ndvi_data]
+            avg_cloud = sum(clouds) / len(clouds)
+            if avg_cloud > 60: conf_score -= 30
+            elif avg_cloud > 30: conf_score -= 15
+
+        # Final Confidence Mapping
+        final_confidence = "low"
+        if conf_score >= 75: final_confidence = "high"
+        elif conf_score >= 45: final_confidence = "medium"
+
+        # Inject scientific explanation into message if cloud is high
+        if avg_cloud > 30:
+            primary_res["message"] += f" (Note: Atmospheric interference was significant at {avg_cloud:.0f}% cloud cover during this window)."
+
         return {
             "success": True,
-            "confidence_level": confidence,
+            "confidence_level": final_confidence,
+            "scientific_metadata": {
+                "average_cloud_cover": avg_cloud,
+                "observation_count": obs_count,
+                "confidence_score": conf_score,
+                "interference_level": "High" if avg_cloud > 60 else ("Moderate" if avg_cloud > 20 else "Low")
+            },
             "tillage_detected": tillage_res["tillage_detected"],
             "primary_emergence_detected": primary_res.get("primary_emergence", False),
             "planting_date_estimation": {
