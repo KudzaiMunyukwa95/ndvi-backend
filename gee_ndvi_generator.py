@@ -388,7 +388,7 @@ def calculate_collection_cloud_cover(collection, polygon, start, end):
         return collection.map(add_cloud).aggregate_mean('field_cloud')
     except: return None
 
-def get_optimized_collection(polygon, start, end, limit_images=True, index_type="NDVI"):
+def get_optimized_collection(polygon, start, end, limit_images=True, index_type="NDVI", allow_cloudy_fallback=False):
     if index_type == "RADAR":
         base = ee.ImageCollection("COPERNICUS/S1_GRD")\
                  .filterBounds(polygon)\
@@ -417,7 +417,12 @@ def get_optimized_collection(polygon, start, end, limit_images=True, index_type=
         col = base.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 90)).sort("CLOUDY_PIXEL_PERCENTAGE")
         col_size = col.size().getInfo()
         if col_size == 0:
-            return None, 0, None, "All available images are heavily clouded (>90%)."
+            if allow_cloudy_fallback:
+                logger.warning("Still 0 images under 90% cloud. FALLBACK: Using all available images regardless of cloud cover.")
+                col = base.sort("CLOUDY_PIXEL_PERCENTAGE") # Return least cloudy first
+                col_size = col.size().getInfo()
+            else:
+                return None, 0, None, "All available images are heavily clouded (>90%)."
 
     if limit_images: col = col.limit(max_img)
     final_size = col.size().getInfo()
@@ -672,7 +677,7 @@ async def generate_timeseries(req: TimeSeriesRequest, auth: bool = Depends(verif
         poly = ee.Geometry.Polygon(req.coordinates)
         logger.info("GEE Geometry created successfully.")
         
-        col, size, _, error_msg = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False, index_type=req.index_type)
+        col, size, _, error_msg = get_optimized_collection(poly, req.startDate, req.endDate, limit_images=False, index_type=req.index_type, allow_cloudy_fallback=True)
         logger.info(f"Collection optimized. Size: {size}")
         
         if error_msg: 
